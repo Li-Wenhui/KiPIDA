@@ -296,6 +296,63 @@ class KiPIDA_MainDialog(wx.Dialog):
         
         return list(set(nodes))
 
+    def _build_rail_dependency_graph(self, system_rails):
+        """
+        Build dependency graph from regulator connections.
+        Returns: dict mapping rail_name -> list of rails it depends on
+        """
+        graph = {rail.net_name: [] for rail in system_rails}
+        
+        for rail in system_rails:
+            for reg in rail.child_regulators:
+                # reg.output_rail_name depends on rail.net_name (input)
+                if reg.output_rail_name in graph:
+                    graph[reg.output_rail_name].append(rail.net_name)
+        
+        return graph
+    
+    def _topological_sort_rails(self, system_rails):
+        """
+        Sort rails in dependency order (leaves first, roots last).
+        Raises ValueError if cycle detected.
+        Returns: list of PowerRail objects in solve order
+        """
+        graph = self._build_rail_dependency_graph(system_rails)
+        
+        # DFS-based topological sort with cycle detection
+        visited = set()
+        rec_stack = set()  # Recursion stack for cycle detection
+        result = []
+        
+        def dfs(rail_name):
+            if rail_name in rec_stack:
+                raise ValueError(f"Cycle detected in power rail dependencies involving '{rail_name}'")
+            
+            if rail_name in visited:
+                return
+            
+            visited.add(rail_name)
+            rec_stack.add(rail_name)
+            
+            # Visit dependencies first
+            for dep in graph.get(rail_name, []):
+                dfs(dep)
+            
+            rec_stack.remove(rail_name)
+            result.append(rail_name)
+        
+        # Process all rails
+        for rail in system_rails:
+            if rail.net_name not in visited:
+                dfs(rail.net_name)
+        
+        # Reverse to get leaves-first order (output rails before input rails)
+        result.reverse()
+        
+        # Convert rail names back to PowerRail objects
+        rail_map = {r.net_name: r for r in system_rails}
+        return [rail_map[name] for name in result]
+
     def on_run(self, event):
         # 1. Collect Rails
         system_rails = self.power_tree.rails
@@ -318,8 +375,18 @@ class KiPIDA_MainDialog(wx.Dialog):
             
             self.system_results = {} # rail_name -> { mesh, results, stats }
             
-            # 2. Iterative Solve Loop (Simplified for now: Single Pass)
-            for rail in system_rails:
+            # 2. Sort rails in dependency order and check for cycles
+            try:
+                sorted_rails = self._topological_sort_rails(system_rails)
+                rail_order = [r.net_name for r in sorted_rails]
+                self.log(f"Rail solve order: {' -> '.join(rail_order)}")
+            except ValueError as e:
+                self.log(f"ERROR: {e}")
+                wx.MessageBox(str(e), "Power Rail Cycle Detected", wx.OK | wx.ICON_ERROR)
+                return
+            
+            # 3. Solve each rail in topological order
+            for rail in sorted_rails:
                 self.log(f"Processing Rail: {rail.net_name} (Sources: {len(rail.sources)}, Loads: {len(rail.loads)})")
                 
                 # A. Get Geometry & Mesh
