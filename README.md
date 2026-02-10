@@ -17,7 +17,9 @@ Ki-PIDA democratizes high-end PI analysis by:
 - **Power Tree Management:** Auto-discover power rails and manage complex hierarchies including VRM efficiency modeling.
 - **Hybrid 2.5D Solver:** Fast and accurate simulation using an optimized resistive mesh approach.
 - **Multi-Physics Support:** Coupled electro-thermal simulation to account for temperature-dependent copper resistivity.
-- **Visual Feedback:** Interactive heatmaps for voltage and current density rendered as overlays on the PCB canvas.
+- **Multi-Rail Analysis:** Simulate complex power trees with nested regulators (Buck, LDO) and enforce correct dependency solving.
+- **Project Persistence:** Automatically saves your power tree configuration (sources, loads, regulators) in the project directory, so you don't lose your setup.
+- **Visual Feedback:** Interactive heatmaps for voltage and current density, with dedicated tabs for each power rail in the system.
 
 ## 📦 Installation
 
@@ -52,10 +54,12 @@ Follow these steps to perform a DC Power Integrity analysis on your board.
 Open your PCB layout in KiCad Pcbnew and click the **Ki-PIDA** icon in the top toolbar to open the analyzer.
 
 ### 2. Review Discovered Power Rails
-Upon launch, Ki-PIDA automatically scans your board for likely power rails (based on naming conventions like `+3V3`, `VCC`, `VDD`, `GND`).
-- Your identified nets will appear in the **Power Tree & Config** tab.
-- **Set Voltage**: Select your net (e.g., `+3V3`). In **Rail Properties**, enter the **Nominal Voltage (V)** (e.g., `3.3`).
-- **Manual Addition**: If a specific net was not auto-discovered, click **Add Manual Net** to select it from the full netlist.
+- **Auto-Discovery:** Upon launch, Ki-PIDA scans your board for power rails and attempts to load any existing configuration from `kipida_config.json` in your project folder.
+- **Add Roots:** Identify your main input rails (e.g., `+12V_IN`, `VBUS`).
+- **Define Regulators:** Use the **+ Regulator** button to create relationships between rails (e.g., `12V -> 5V`). Ki-PIDA supports:
+    - **Linear Regulators (LDOs):** Pass current 1:1 from input to output.
+    - **Switching Regulators (Buck/Boost):** Conserve power based on efficiency (e.g., 90%).
+    - **Multi-Output Support:** Handle PMICs where one component drives multiple output rails.
 
 ![alt text](image-4.png)
 
@@ -78,17 +82,17 @@ Identify the components consuming power:
 
 ### 5. Run the Simulation
 Before running, you can adjust the **Mesh Resolution (mm)**. A value of `0.1mm` is usually sufficient for accurate results.
-- Click **Run Simulation** at the bottom of the window.
-- The plugin will automatically switch to the **Log** tab. Wait a few seconds for the mesh generation and solver to complete.
+- Click **Run Simulation**.
+- The solver analyzes the power tree topology to determine the correct solution order (Leaf-to-Root) for current propagation.
+- Example: For a `12V -> 5V -> 3.3V` chain, it solves 3.3V first, applies that load to the 5V rail, solves 5V, and finally solves the 12V input.
 
 ### 6. Analyze Results
 Once "Simulation Success" appears, the UI will jump to the **Results** tab.
-- **Text Summary**: Look at the top panel for the minimum voltage found on the net and the total percentage drop.
-- **Visual Heatmap**: The bottom panel displays a color-coded heatmap overlaid on your board geometry. 
-    - **Bright Colors (Red/Yellow)**: Represent areas near the source (nominal voltage).
-    - **Cool Colors (Blue/Purple)**: Represent areas with higher voltage drop (lowest voltage).
 
-![Results](image-2.png)
+- **Rail Selection:** A tab will be created for each power rail in your system.
+- **Per-Rail Visualization:** Inside each rail's tab, you can view:
+    - **3D View:** A 3D voltage plot of the entire net.
+    - **Layer Views:** Individual 2D heatmaps for every layer containing copper for that net.
 
 > [!TIP]
 > Use the **Enable Debug Log** checkbox if you encounter issues during meshing or solving to see more detail in the Log tab.

@@ -2,14 +2,18 @@ import wx
 import wx.dataview
 
 try:
-    from models import PowerRail, UnifiedSource, UnifiedLoad, ComponentRef
+    from models import PowerRail, UnifiedSource, UnifiedLoad, ComponentRef, VoltageRegulator
     from ui.component_selector import ComponentSelectorDialog
+    from ui.regulator_dialog import RegulatorDialog
     from discovery import NetDiscoverer
+    from config_manager import save_config, load_config
 except (ImportError, ValueError):
     # Fallback or just re-raise if absolute fails (shouldn't happen with sys.path set)
-    from models import PowerRail, UnifiedSource, UnifiedLoad, ComponentRef
+    from models import PowerRail, UnifiedSource, UnifiedLoad, ComponentRef, VoltageRegulator
     from ui.component_selector import ComponentSelectorDialog
+    from ui.regulator_dialog import RegulatorDialog
     from discovery import NetDiscoverer
+    from config_manager import save_config, load_config
 
 class NetSelectionDialog(wx.Dialog):
     def __init__(self, parent, nets):
@@ -31,9 +35,10 @@ class NetSelectionDialog(wx.Dialog):
         return self.lb.GetString(sel)
 
 class PowerTreePanel(wx.Panel):
-    def __init__(self, parent, board, log_callback=None):
+    def __init__(self, parent, board, project=None, log_callback=None):
         super().__init__(parent)
         self.board = board
+        self.project = project
         self.log_callback = log_callback
         self.discoverer = NetDiscoverer(board, log_callback=log_callback)
         
@@ -71,6 +76,14 @@ class PowerTreePanel(wx.Panel):
         self.btn_add_rail = wx.Button(left_panel, label="Add Manual Net")
         left_sizer.Add(self.btn_add_rail, 0, wx.EXPAND | wx.ALL, 2)
         
+        # Config buttons
+        config_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.btn_save_config = wx.Button(left_panel, label="Save Config")
+        self.btn_load_config = wx.Button(left_panel, label="Load Config")
+        config_sizer.Add(self.btn_save_config, 1, wx.EXPAND | wx.RIGHT, 2)
+        config_sizer.Add(self.btn_load_config, 1, wx.EXPAND)
+        left_sizer.Add(config_sizer, 0, wx.EXPAND | wx.ALL, 2)
+        
         left_panel.SetSizer(left_sizer)
         
         # RIGHT: Details
@@ -102,10 +115,12 @@ class PowerTreePanel(wx.Panel):
         act_sizer = wx.BoxSizer(wx.HORIZONTAL)
         self.btn_add_src = wx.Button(self.detail_panel, label="+ Source")
         self.btn_add_load = wx.Button(self.detail_panel, label="+ Load")
+        self.btn_add_reg = wx.Button(self.detail_panel, label="+ Regulator")
         self.btn_del_comp = wx.Button(self.detail_panel, label="- Remove")
         
         act_sizer.Add(self.btn_add_src, 0, wx.RIGHT, 5)
         act_sizer.Add(self.btn_add_load, 0, wx.RIGHT, 5)
+        act_sizer.Add(self.btn_add_reg, 0, wx.RIGHT, 5)
         act_sizer.Add(self.btn_del_comp, 0, wx.RIGHT, 5)
         
         self.detail_sizer.Add(act_sizer, 0, wx.EXPAND | wx.ALL, 5)
@@ -119,18 +134,33 @@ class PowerTreePanel(wx.Panel):
         self.SetSizer(main_sizer)
         
         self.btn_add_rail.Bind(wx.EVT_BUTTON, self.on_add_rail)
+        self.btn_save_config.Bind(wx.EVT_BUTTON, self.on_save_config)
+        self.btn_load_config.Bind(wx.EVT_BUTTON, self.on_load_config)
         self.rail_list.Bind(wx.EVT_LISTBOX, self.on_rail_select)
         self.txt_voltage.Bind(wx.EVT_TEXT, self.on_voltage_change)
         
         self.btn_add_src.Bind(wx.EVT_BUTTON, lambda e: self.on_add_component("SOURCE"))
         self.btn_add_load.Bind(wx.EVT_BUTTON, lambda e: self.on_add_component("LOAD"))
+        self.btn_add_reg.Bind(wx.EVT_BUTTON, self.on_add_regulator)
         self.btn_del_comp.Bind(wx.EVT_BUTTON, self.on_del_component)
         self.comp_list.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self.on_edit_component)
 
     def auto_scan(self):
-        """Auto-scan board on startup"""
-        self.rails = self.discoverer.discover_power_nets()
-        self.log(f"Scan complete. Discovered {len(self.rails)} power rail candidates.")
+        """Auto-scan board on startup or load config if it exists."""
+        # Try to load config first
+        config_path = self._get_config_path()
+        if config_path and config_path.exists():
+            try:
+                self.rails = load_config(str(config_path))
+                self.log(f"Loaded configuration from {config_path.name} ({len(self.rails)} rails)")
+            except Exception as e:
+                self.log(f"Failed to load config: {e}. Running auto-scan instead.")
+                self.rails = self.discoverer.discover_power_nets()
+                self.log(f"Scan complete. Discovered {len(self.rails)} power rail candidates.")
+        else:
+            self.rails = self.discoverer.discover_power_nets()
+            self.log(f"Scan complete. Discovered {len(self.rails)} power rail candidates.")
+        
         self.rail_list.Clear()
         for r in self.rails:
             lbl = f"{r.net_name}"
@@ -201,6 +231,23 @@ class PowerTreePanel(wx.Panel):
             self.comp_list.SetItem(idx, 2, f"{l.total_current} A")
             self.comp_list.SetItem(idx, 3, str(len(l.pad_names)))
 
+        # Regulators (Outputting to another rail)
+        for r in self.active_rail.child_regulators:
+            idx = self.comp_list.InsertItem(self.comp_list.GetItemCount(), f"REG -> {r.output_rail_name}")
+            self.comp_list.SetItem(idx, 1, r.name)
+            self.comp_list.SetItem(idx, 2, "---") # V determined by output rail
+            self.comp_list.SetItem(idx, 3, r.reg_type)
+
+        # Incoming Regulators (Sources from another rail)
+        for r in self.rails:
+            if r == self.active_rail: continue
+            for reg in r.child_regulators:
+                if reg.output_rail_name == self.active_rail.net_name:
+                    idx = self.comp_list.InsertItem(self.comp_list.GetItemCount(), f"REG FROM {r.net_name}")
+                    self.comp_list.SetItem(idx, 1, reg.name)
+                    self.comp_list.SetItem(idx, 2, "SOURCE") 
+                    self.comp_list.SetItem(idx, 3, reg.reg_type)
+
     def on_voltage_change(self, event):
         if not self.active_rail: return
         try:
@@ -265,36 +312,51 @@ class PowerTreePanel(wx.Panel):
         dlg.Destroy()
 
     def on_edit_component(self, event):
+        """Handle double-click on component list item."""
         sel = self.comp_list.GetFirstSelected()
-        if sel == -1 or not self.active_rail: return
+        if sel == -1 or not self.active_rail:
+            return
         
         n_src = len(self.active_rail.sources)
-        comp_obj = None
-        mode = ""
+        n_load = len(self.active_rail.loads)
+        n_reg = len(self.active_rail.child_regulators)
+        
+        # Determine which type of component was clicked
         if sel < n_src:
-            comp_obj = self.active_rail.sources[sel]
-            mode = "SOURCE"
+            # Edit Source
+            self._edit_source(sel)
+        elif sel < n_src + n_load:
+            # Edit Load
+            self._edit_load(sel - n_src)
+        elif sel < n_src + n_load + n_reg:
+            # Edit outgoing Regulator
+            self._edit_regulator(sel - n_src - n_load)
         else:
-            comp_obj = self.active_rail.loads[sel - n_src]
-            mode = "LOAD"
-            
+            # Incoming regulator - find it
+            incoming_idx = sel - n_src - n_load - n_reg
+            self._edit_incoming_regulator(incoming_idx)
+    
+    def _edit_source(self, idx):
+        """Edit a source component."""
+        comp_obj = self.active_rail.sources[idx]
+        
         # Get components on this net
         all_comps = self.discoverer.get_components_on_net(self.active_rail.net_name)
-        if not all_comps: return
+        if not all_comps:
+            wx.MessageBox("No components found on this net.")
+            return
         
-        # Filter out components where all pads are already assigned, 
-        # but KEEP the pads of the component being edited.
+        # Build set of used pads (excluding current component)
         used_pads = set()
-        for src in self.active_rail.sources:
-            if src is not comp_obj:
+        for i, src in enumerate(self.active_rail.sources):
+            if i != idx:  # Skip current component
                 for pad in src.pad_names:
                     used_pads.add(f"{src.component_ref.ref_des}-{pad}")
         for load in self.active_rail.loads:
-            if load is not comp_obj:
-                for pad in load.pad_names:
-                    used_pads.add(f"{load.component_ref.ref_des}-{pad}")
-                    
-        # Filter components
+            for pad in load.pad_names:
+                used_pads.add(f"{load.component_ref.ref_des}-{pad}")
+        
+        # Filter available components
         available_comps = {}
         for ref, pads in all_comps.items():
             has_available_pad = False
@@ -305,24 +367,212 @@ class PowerTreePanel(wx.Panel):
                     break
             if has_available_pad:
                 available_comps[ref] = pads
-
-        dlg = ComponentSelectorDialog(self, "Edit Component", self.active_rail.net_name, available_comps)
-        dlg.set_mode(mode)
         
-        # Prepopulate
-        val = 0.0
-        if mode == "LOAD":
-            val = comp_obj.total_current
-        dlg.prepopulate(comp_obj.component_ref.ref_des, val, comp_obj.pad_names)
+        dlg = ComponentSelectorDialog(self, "Edit Source", self.active_rail.net_name, available_comps)
+        dlg.set_mode("SOURCE")
+        dlg.prepopulate(comp_obj.component_ref.ref_des, 0.0, comp_obj.pad_names)
         
         if dlg.ShowModal() == wx.ID_OK:
             ref_des, val, pads = dlg.GetSelection()
             comp_obj.component_ref.ref_des = ref_des
             comp_obj.pad_names = pads
-            if mode == "LOAD":
-                comp_obj.total_current = val
-                
             self.refresh_comp_list()
+        
+        dlg.Destroy()
+    
+    def _edit_load(self, idx):
+        """Edit a load component."""
+        comp_obj = self.active_rail.loads[idx]
+        
+        # Get components on this net
+        all_comps = self.discoverer.get_components_on_net(self.active_rail.net_name)
+        if not all_comps:
+            wx.MessageBox("No components found on this net.")
+            return
+        
+        # Build set of used pads (excluding current component)
+        used_pads = set()
+        for src in self.active_rail.sources:
+            for pad in src.pad_names:
+                used_pads.add(f"{src.component_ref.ref_des}-{pad}")
+        for i, load in enumerate(self.active_rail.loads):
+            if i != idx:  # Skip current component
+                for pad in load.pad_names:
+                    used_pads.add(f"{load.component_ref.ref_des}-{pad}")
+        
+        # Filter available components
+        available_comps = {}
+        for ref, pads in all_comps.items():
+            has_available_pad = False
+            for pad in pads:
+                pad_name = getattr(pad, 'number', getattr(pad, 'name', ''))
+                if f"{ref}-{pad_name}" not in used_pads:
+                    has_available_pad = True
+                    break
+            if has_available_pad:
+                available_comps[ref] = pads
+        
+        dlg = ComponentSelectorDialog(self, "Edit Load", self.active_rail.net_name, available_comps)
+        dlg.set_mode("LOAD")
+        dlg.prepopulate(comp_obj.component_ref.ref_des, comp_obj.total_current, comp_obj.pad_names)
+        
+        if dlg.ShowModal() == wx.ID_OK:
+            ref_des, val, pads = dlg.GetSelection()
+            comp_obj.component_ref.ref_des = ref_des
+            comp_obj.pad_names = pads
+            comp_obj.total_current = val
+            self.refresh_comp_list()
+        
+        dlg.Destroy()
+    
+    def _edit_regulator(self, idx):
+        """Edit an outgoing regulator."""
+        reg = self.active_rail.child_regulators[idx]
+        
+        rail_names = [r.net_name for r in self.rails]
+        dlg = RegulatorDialog(
+            self, 
+            "Edit Regulator", 
+            rail_names, 
+            self.discoverer,
+            input_rail=reg.input_rail_name,
+            output_rail=reg.output_rail_name
+        )
+        
+        # Prepopulate the dialog with existing regulator data
+        dlg.prepopulate(reg)
+        
+        if dlg.ShowModal() == wx.ID_OK:
+            data = dlg.GetValue()
+            
+            # Update regulator object
+            reg.name = data['name']
+            reg.input_rail_name = data['input_rail']
+            reg.input_ref_des = data['input_ref_des']
+            reg.input_pad_names = data['input_pads']
+            reg.output_rail_name = data['output_rail']
+            reg.output_ref_des = data['output_ref_des']
+            reg.output_pad_names = data['output_pads']
+            reg.reg_type = data['type']
+            reg.efficiency = data['efficiency']
+            
+            # If input rail changed, move regulator to new rail
+            if data['input_rail'] != self.active_rail.net_name:
+                self.active_rail.child_regulators.pop(idx)
+                target_rail = next((r for r in self.rails if r.net_name == data['input_rail']), None)
+                if target_rail:
+                    target_rail.add_child_regulator(reg)
+                    self.log(f"Regulator moved to {target_rail.net_name}")
+            
+            self.refresh_comp_list()
+        
+        dlg.Destroy()
+    
+    def _edit_incoming_regulator(self, incoming_idx):
+        """Edit an incoming regulator (one that outputs to this rail)."""
+        # Find the incoming regulator
+        count = 0
+        source_rail = None
+        reg = None
+        
+        for r in self.rails:
+            if r == self.active_rail:
+                continue
+            for candidate_reg in r.child_regulators:
+                if candidate_reg.output_rail_name == self.active_rail.net_name:
+                    if count == incoming_idx:
+                        source_rail = r
+                        reg = candidate_reg
+                        break
+                    count += 1
+            if reg:
+                break
+        
+        if not reg or not source_rail:
+            wx.MessageBox("Could not locate regulator.")
+            return
+        
+        # Edit it (same as _edit_regulator but from source_rail context)
+        rail_names = [r.net_name for r in self.rails]
+        dlg = RegulatorDialog(
+            self,
+            "Edit Regulator",
+            rail_names,
+            self.discoverer,
+            input_rail=reg.input_rail_name,
+            output_rail=reg.output_rail_name
+        )
+        
+        dlg.prepopulate(reg)
+        
+        if dlg.ShowModal() == wx.ID_OK:
+            data = dlg.GetValue()
+            
+            # Update regulator object
+            reg.name = data['name']
+            reg.input_rail_name = data['input_rail']
+            reg.input_ref_des = data['input_ref_des']
+            reg.input_pad_names = data['input_pads']
+            reg.output_rail_name = data['output_rail']
+            reg.output_ref_des = data['output_ref_des']
+            reg.output_pad_names = data['output_pads']
+            reg.reg_type = data['type']
+            reg.efficiency = data['efficiency']
+            
+            # If input rail changed, move regulator
+            if data['input_rail'] != source_rail.net_name:
+                source_rail.child_regulators.remove(reg)
+                target_rail = next((r for r in self.rails if r.net_name == data['input_rail']), None)
+                if target_rail:
+                    target_rail.add_child_regulator(reg)
+                    self.log(f"Regulator moved to {target_rail.net_name}")
+            
+            self.refresh_comp_list()
+        
+        dlg.Destroy()
+
+    def on_add_regulator(self, event):
+        if not self.active_rail: return
+        
+        rail_names = [r.net_name for r in self.rails]
+        # Pass discoverer to dialog
+        dlg = RegulatorDialog(self, "Add Regulator", rail_names, self.discoverer, input_rail=self.active_rail.net_name)
+        
+        if dlg.ShowModal() == wx.ID_OK:
+            data = dlg.GetValue()
+            
+            # Create Regulator Object
+            reg = VoltageRegulator(
+                name=data['name'],
+                input_rail_name=data['input_rail'],
+                input_ref_des=data['input_ref_des'],
+                input_pad_names=data['input_pads'],
+                output_rail_name=data['output_rail'],
+                output_ref_des=data['output_ref_des'],
+                output_pad_names=data['output_pads'],
+                reg_type=data['type'],
+                efficiency=data['efficiency']
+            )
+            
+            # Add to the INPUT rail (which is self.active_rail)
+            # Actually, the user might have changed input_rail in the dialog!
+            # We need to find the correct input rail object.
+            
+            target_rail = None
+            for r in self.rails:
+                if r.net_name == data['input_rail']:
+                    target_rail = r
+                    break
+            
+            if target_rail:
+                target_rail.add_child_regulator(reg)
+                self.refresh_comp_list() # Only refreshes active rail list
+                
+                # If we added to a different rail than active, maybe switch? or just log?
+                if target_rail != self.active_rail:
+                    self.log(f"Regulator added to {target_rail.net_name}")
+            else:
+                wx.MessageBox("Error locating input rail.")
             
         dlg.Destroy()
 
@@ -330,14 +580,95 @@ class PowerTreePanel(wx.Panel):
         sel = self.comp_list.GetFirstSelected()
         if sel == -1 or not self.active_rail: return
         
-        # This is tricky because list is flattened sources + loads
-        # Better strategy: keep a parallel list of objects or verify index
-        # For MVP, simpler: Sources are first, then Loads
-        
         n_src = len(self.active_rail.sources)
+        n_load = len(self.active_rail.loads)
+        n_reg = len(self.active_rail.child_regulators)
+        
         if sel < n_src:
             self.active_rail.sources.pop(sel)
-        else:
+        elif sel < n_src + n_load:
             self.active_rail.loads.pop(sel - n_src)
+        elif sel < n_src + n_load + n_reg:
+            self.active_rail.child_regulators.pop(sel - n_src - n_load)
             
         self.refresh_comp_list()
+    
+    def _get_config_path(self):
+        """Get the path to the config file based on project name."""
+        try:
+            from pathlib import Path
+            
+            # Use project object if available (IPC API)
+            if self.project and hasattr(self.project, 'path') and hasattr(self.project, 'name'):
+                project_path = Path(self.project.path)
+                config_filename = f"{self.project.name}.kipida.json"
+                config_path = project_path / config_filename
+                return config_path
+            
+            # Fallback: try to get from board (legacy)
+            if hasattr(self.board, 'filename'):
+                project_file = self.board.filename
+            elif hasattr(self.board, 'get_filename'):
+                project_file = self.board.get_filename()
+            else:
+                self.log("ERROR: Cannot determine project path - no project object and board has no filename attribute.")
+                return None
+            
+            if not project_file:
+                return None
+            
+            # Convert to Path and get directory + stem
+            project_path = Path(project_file)
+            config_filename = f"{project_path.stem}.kipida.json"
+            config_path = project_path.parent / config_filename
+            return config_path
+        except Exception as e:
+            self.log(f"Error getting config path: {e}")
+            return None
+    
+    def on_save_config(self, event):
+        """Save current configuration to JSON file."""
+        config_path = self._get_config_path()
+        if not config_path:
+            wx.MessageBox("Unable to determine project path. Cannot save config.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+        
+        try:
+            save_config(self.rails, str(config_path))
+            self.log(f"Configuration saved to {config_path.name}")
+            wx.MessageBox(f"Configuration saved successfully to:\n{config_path}", "Success", wx.OK | wx.ICON_INFORMATION)
+        except Exception as e:
+            self.log(f"Failed to save config: {e}")
+            wx.MessageBox(f"Failed to save configuration:\n{e}", "Error", wx.OK | wx.ICON_ERROR)
+    
+    def on_load_config(self, event):
+        """Load configuration from JSON file."""
+        config_path = self._get_config_path()
+        if not config_path:
+            wx.MessageBox("Unable to determine project path. Cannot load config.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+        
+        if not config_path.exists():
+            wx.MessageBox(f"Config file not found:\n{config_path}", "Error", wx.OK | wx.ICON_ERROR)
+            return
+        
+        try:
+            self.rails = load_config(str(config_path))
+            self.log(f"Loaded configuration from {config_path.name} ({len(self.rails)} rails)")
+            
+            # Refresh UI
+            self.rail_list.Clear()
+            for r in self.rails:
+                lbl = f"{r.net_name}"
+                if r.nominal_voltage:
+                    lbl += f" ({r.nominal_voltage}V)"
+                self.rail_list.Append(lbl)
+            
+            if self.rails:
+                self.rail_list.SetSelection(0)
+                self.on_rail_select(None)
+            
+            wx.MessageBox(f"Configuration loaded successfully:\n{len(self.rails)} rails", "Success", wx.OK | wx.ICON_INFORMATION)
+        except Exception as e:
+            self.log(f"Failed to load config: {e}")
+            wx.MessageBox(f"Failed to load configuration:\n{e}", "Error", wx.OK | wx.ICON_ERROR)

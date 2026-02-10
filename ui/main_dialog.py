@@ -16,7 +16,7 @@ from ui.power_tree_panel import PowerTreePanel
 from plotter import Plotter
 
 class KiPIDA_MainDialog(wx.Dialog):
-    def __init__(self, parent, board_adapter):
+    def __init__(self, parent, board_adapter, project=None):
         super(KiPIDA_MainDialog, self).__init__(parent, title="Ki-PIDA: Power Integrity Analyzer", 
                                                 style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
         
@@ -24,6 +24,7 @@ class KiPIDA_MainDialog(wx.Dialog):
         self.SetMinSize((800, 500))
         
         self.board = board_adapter
+        self.project = project
         
         self._init_ui()
         self.Center()
@@ -46,6 +47,12 @@ class KiPIDA_MainDialog(wx.Dialog):
         else:
              self.log(f"Board object connected: {type(self.board)}")
         
+        if self.project:
+            self.log(f"Project: {self.project.name} at {self.project.path}")
+        else:
+            self.log("WARNING: No project object available.")
+
+        
     def _init_ui(self):
         main_sizer = wx.BoxSizer(wx.VERTICAL)
         
@@ -54,7 +61,7 @@ class KiPIDA_MainDialog(wx.Dialog):
         
         # Tab 1: Configuration (New Power Tree Panel)
         self.tab_config = wx.Panel(self.notebook)
-        self.power_tree = PowerTreePanel(self.tab_config, self.board, log_callback=self.log)
+        self.power_tree = PowerTreePanel(self.tab_config, self.board, project=self.project, log_callback=self.log)
         
         # Config Tab Layout
         config_sizer = wx.BoxSizer(wx.VERTICAL)
@@ -174,247 +181,367 @@ class KiPIDA_MainDialog(wx.Dialog):
     def to_mm(self, val_nm):
         return val_nm / 1e6
 
-    def on_run(self, event):
-        rail = self.power_tree.active_rail
-        if not rail:
-            wx.MessageBox("Please select a Power Rail to simulate.")
-            return
-            
-        net_name = rail.net_name
-        self.notebook.SetSelection(2) # Switch to Log
-        self.log(f"--- Starting Simulation for {net_name} ---")
-        self.log(f"Nominal Voltage: {rail.nominal_voltage} V")
+    def _get_mesh_nodes(self, mesh, ref_des, pad_names, debug_mode):
+        if debug_mode:
+            self.log(f"  [_get_mesh_nodes] Looking up {ref_des} pads={pad_names}")
+        nodes = []
         
-        if not rail.sources:
-             self.log("WARNING: No Voltage Sources defined. Simulation will likely fail or return all zeros.")
+        # Helper to get attribute value (property or getter)
+        def _get_val(obj, attr_name, default=None):
+            if obj is None: return default
+            # Try property
+            if hasattr(obj, attr_name):
+                val = getattr(obj, attr_name)
+                if val is not None: return val
+            # Try getter
+            for prefix in ["get_", ""]:
+                method_name = prefix + attr_name
+                if hasattr(obj, method_name):
+                    try:
+                        val = getattr(obj, method_name)()
+                        if val is not None: return val
+                    except: pass
+            return default
+        
+        # Helper to get board items (same pattern as discovery.py)
+        def get_board_items(attr_name):
+            if hasattr(self.board, attr_name):
+                return getattr(self.board, attr_name)
+            method_name = f"get_{attr_name}"
+            if hasattr(self.board, method_name):
+                try: return getattr(self.board, method_name)()
+                except: pass
+            return []
+        
+        # Find the footprint
+        found_fp = None
+        footprints = get_board_items('footprints')
+        
+        for fp in footprints:
+            # Get reference (same logic as discovery.py)
+            ref = _get_val(fp, 'reference', _get_val(fp, 'ref_des', ''))
+            if not ref:
+                # Try reference_field for Kipy
+                ref_field = _get_val(fp, 'reference_field')
+                if ref_field:
+                    text = _get_val(ref_field, 'text')
+                    if text:
+                        ref = _get_val(text, 'value', '')
+            
+            if ref == ref_des:
+                found_fp = fp
+                break
+        
+        if not found_fp:
+            if debug_mode: self.log(f"  Warning: Footprint {ref_des} not found.")
+            return []
+        
+        # Get pads (same logic as discovery.py)
+        pads = _get_val(found_fp, 'pads')
+        if pads is None:
+            defn = _get_val(found_fp, 'definition')
+            pads = _get_val(defn, 'pads', [])
+        
+        target_pads = []
+        if not pad_names:
+            target_pads = pads  # All pads
+        else:
+            for p in pads:
+                # Get pad number/name
+                pad_num = _get_val(p, 'number', _get_val(p, 'name', ''))
+                if pad_num in pad_names:
+                    target_pads.append(p)
+        
+        if not target_pads:
+            if debug_mode: self.log(f"  No pads found for {ref_des} matching {pad_names}")
+            return []
+        
+        origin = mesh.grid_origin
+        gs = mesh.grid_step
+        
+        for p in target_pads:
+            pos = _get_val(p, 'position')
+            if not pos: continue
+            
+            # Handle KiCad/Protobuf position types
+            px, py = 0, 0
+            if hasattr(pos, 'x') and hasattr(pos, 'y'):
+                px = _get_val(pos, 'x', 0)
+                py = _get_val(pos, 'y', 0)
+            elif hasattr(pos, '__getitem__'):
+                px = pos[0]
+                py = pos[1]
+            
+            # Convert to mm if likely in nm (KiCad native)
+            # Heuristic: if > 10000, assume nm
+            if abs(px) > 10000 or abs(py) > 10000:
+                px /= 1e6
+                py /= 1e6
+            
+            tx = int(round((px - origin[0]) / gs))
+            ty = int(round((py - origin[1]) / gs))
+            
+            # Search 3x3 neighborhood across layers
+            found_any = False
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    for layer in range(32):  # search layers
+                        nid = mesh.node_map.get((tx+dx, ty+dy, layer))
+                        if nid is not None:
+                            nodes.append(nid)
+                            found_any = True
+            
+            if not found_any and debug_mode:
+                self.log(f"  Pad {ref_des} at ({px:.2f},{py:.2f}) not on mesh.")
+        
+        return list(set(nodes))
 
+    def _build_rail_dependency_graph(self, system_rails):
+        """
+        Build dependency graph from regulator connections.
+        Returns: dict mapping rail_name -> list of rails it depends on
+        """
+        graph = {rail.net_name: [] for rail in system_rails}
+        
+        for rail in system_rails:
+            for reg in rail.child_regulators:
+                # reg.output_rail_name depends on rail.net_name (input)
+                if reg.output_rail_name in graph:
+                    graph[reg.output_rail_name].append(rail.net_name)
+        
+        return graph
+    
+    def _topological_sort_rails(self, system_rails):
+        """
+        Sort rails in dependency order (leaves first, roots last).
+        Raises ValueError if cycle detected.
+        Returns: list of PowerRail objects in solve order
+        """
+        graph = self._build_rail_dependency_graph(system_rails)
+        
+        # DFS-based topological sort with cycle detection
+        visited = set()
+        rec_stack = set()  # Recursion stack for cycle detection
+        result = []
+        
+        def dfs(rail_name):
+            if rail_name in rec_stack:
+                raise ValueError(f"Cycle detected in power rail dependencies involving '{rail_name}'")
+            
+            if rail_name in visited:
+                return
+            
+            visited.add(rail_name)
+            rec_stack.add(rail_name)
+            
+            # Visit dependencies first
+            for dep in graph.get(rail_name, []):
+                dfs(dep)
+            
+            rec_stack.remove(rail_name)
+            result.append(rail_name)
+        
+        # Process all rails
+        for rail in system_rails:
+            if rail.net_name not in visited:
+                dfs(rail.net_name)
+        
+        # Reverse to get leaves-first order (output rails before input rails)
+        result.reverse()
+        
+        # Convert rail names back to PowerRail objects
+        rail_map = {r.net_name: r for r in system_rails}
+        return [rail_map[name] for name in result]
+
+    def on_run(self, event):
+        # 1. Collect Rails
+        system_rails = self.power_tree.rails
+        if not system_rails:
+             wx.MessageBox("No power rails defined.")
+             return
+             
+        self.notebook.SetSelection(2) # Switch to Log
+        self.log(f"--- Starting System Simulation ({len(system_rails)} rails) ---")
+        
         try:
             debug_mode = self.chk_debug.GetValue()
             
-            # --- 1. Extraction ---
             extractor = GeometryExtractor(self.board, debug=debug_mode, log_callback=self.log)
-            # Ensure we can get stackup
             try:
                 stackup = extractor.get_board_stackup()
             except Exception as e:
                 self.log(f"Error extracting stackup: {e}")
                 return
-                
-            geo = extractor.get_net_geometry(net_name)
             
-            if not geo:
-                self.log("No geometry found for net.")
-                return
-
-            # Plot Geometry (Debug)
-            if debug_mode:
-                 self._debug_plot_geo(extractor, geo)
-
-            # --- 2. Meshing ---
+            self.system_results = {} # rail_name -> { mesh, results, stats }
+            rail_total_current = {rail.net_name: 0.0 for rail in system_rails}
+            
+            # 2. Sort rails in dependency order and check for cycles
             try:
-                gs = float(self.txt_grid_size.GetValue())
-                if gs < 0.01: gs = 0.01
-            except: gs = 0.1
-            
-            mesher = Mesher(self.board, debug=debug_mode, log_callback=self.log)
-            mesh = mesher.generate_mesh(net_name, geo, stackup, grid_size_mm=gs)
-            
-            # Count edges from sparse matrix data (4 entries per edge)
-            edge_count = len(mesh.G_coo_data) // 4 if len(mesh.G_coo_data) > 0 else len(mesh.edges)
-            self.log(f"Mesh: {len(mesh.nodes)} nodes, {edge_count} edges.")
-            
-            if len(mesh.nodes) == 0:
-                self.log("Error: Mesh has 0 nodes.")
+                sorted_rails = self._topological_sort_rails(system_rails)
+                rail_order = [r.net_name for r in sorted_rails]
+                self.log(f"Rail solve order: {' -> '.join(rail_order)}")
+            except ValueError as e:
+                self.log(f"ERROR: {e}")
+                wx.MessageBox(str(e), "Power Rail Cycle Detected", wx.OK | wx.ICON_ERROR)
                 return
-
-            if debug_mode:
-                self._debug_plot_mesh(mesher, mesh, stackup)
-
-            # --- 3. Map Sources/Loads to Nodes ---
-            solver_sources = []
-            solver_loads = []
             
-            grid_step = mesh.grid_step
-            origin = mesh.grid_origin
-            
-            def get_mesh_nodes_for_component_pads(ref_des, pad_names):
-                """Helper to find mesh nodes corresponding to specific pads of a component."""
-                nodes = []
+            # 3. Solve each rail in topological order
+            for rail in sorted_rails:
+                self.log(f"Processing Rail: {rail.net_name} (Sources: {len(rail.sources)}, Loads: {len(rail.loads)})")
                 
-                # Manual footprint lookup for kipy
-                fp = None
+                # Update total current for this rail (starting with direct loads)
+                rail_total_current[rail.net_name] = sum(load.total_current for load in rail.loads)
                 
-                # Robust get helper
-                def _get_val(o, n, d=None):
-                    if hasattr(o, n): return getattr(o, n)
-                    if hasattr(o, 'get_'+n): 
-                        try: return getattr(o, 'get_'+n)()
-                        except: pass
-                    return d
+                # A. Get Geometry & Mesh
+                geo = extractor.get_net_geometry(rail.net_name)
+                if not geo:
+                    self.log(f"  Skipping {rail.net_name}: No geometry.")
+                    continue
+                    
+                try:
+                    gs = float(self.txt_grid_size.GetValue())
+                    if gs < 0.01: gs = 0.01
+                except: gs = 0.1
                 
-                # Get footprints robustly
-                board_fps = _get_val(self.board, 'footprints')
-                if not board_fps: board_fps = []
+                mesher = Mesher(self.board, debug=debug_mode, log_callback=self.log)
+                mesh = mesher.generate_mesh(rail.net_name, geo, stackup, grid_size_mm=gs)
                 
-                for f in board_fps:
-                    # Robust Ref Des
-                    ref = _get_val(f, 'reference', _get_val(f, 'ref_des', ''))
-                    if not ref:
-                        # Try reference_field
-                        rf = _get_val(f, 'reference_field')
-                        if rf:
-                            txt = _get_val(rf, 'text')
-                            if txt: ref = _get_val(txt, 'value', '')
-                            
-                    if ref == ref_des:
-                        fp = f
-                        break
-                            
-                if not fp:
-                    self.log(f"Warning: Footprint {ref_des} not found.")
-                    return []
+                if len(mesh.nodes) == 0:
+                     self.log(f"  Skipping {rail.net_name}: Mesh empty.")
+                     continue
+                     
+                # B. Map Sources & Loads
+                solver_sources = []
+                solver_loads = []
                 
-                # Robust pads
-                pads = _get_val(fp, 'pads')
-                if pads is None:
-                    defn = _get_val(fp, 'definition')
-                    pads = _get_val(defn, 'pads', [])
-                
-                for pad_name in pad_names:
-                    pad = None
-                    for p in pads:
-                        p_name = _get_val(p, 'number', _get_val(p, 'name', ''))
-                        if p_name == pad_name:
-                            pad = p
-                            break
+                # 1. Standard Sources
+                for src in rail.sources:
+                    nodes = self._get_mesh_nodes(mesh, src.component_ref.ref_des, src.pad_names, debug_mode)
+                    if debug_mode:
+                        self.log(f"  Source {src.component_ref.ref_des} pads {src.pad_names} -> {len(nodes)} nodes")
+                    if not nodes:
+                        self.log(f"  WARNING: Source {src.component_ref.ref_des} pads {src.pad_names} found NO mesh nodes!")
+                    v_set = rail.nominal_voltage
+                    for nid in nodes:
+                        solver_sources.append({'node_id': nid, 'voltage': v_set})
+
+                # 2. Regulator Outputs (Sources for THIS rail)
+                for other_rail in system_rails:
+                    for reg in other_rail.child_regulators:
+                        if reg.output_rail_name == rail.net_name:
+                            # Regulator feeds THIS rail. It is a SOURCE.
+                            # Use specific OUTPUT location
+                            nodes = self._get_mesh_nodes(mesh, reg.output_ref_des, reg.output_pad_names, debug_mode)
+                            if debug_mode:
+                                self.log(f"  Regulator {reg.name} output {reg.output_ref_des} pads {reg.output_pad_names} -> {len(nodes)} nodes")
+                            if not nodes:
+                                self.log(f"  WARNING: Regulator {reg.name} output {reg.output_ref_des} pads {reg.output_pad_names} found NO mesh nodes!")
+                            v_out = rail.nominal_voltage # Output target IS the rail voltage
+                            for nid in nodes:
+                                solver_sources.append({'node_id': nid, 'voltage': v_out})
                                 
-                    if not pad: continue
-                    
-                    pos = pad.position # Protobuf: position object with x, y
-                    px, py = self.to_mm(pos.x), self.to_mm(pos.y)
-                    
-                    # Convert to grid
-                    tx = int(round((px - origin[0]) / grid_step))
-                    ty = int(round((py - origin[1]) / grid_step))
-                    
-                    # Search neighborhood
-                    # TODO: Properly use pad bounding box? MVP: 3x3 search
-                    found_for_pad = False
-                    for dx in [-1, 0, 1]:
-                        for dy in [-1, 0, 1]:
-                            ix, iy = tx + dx, ty + dy
-                            # Check all layers
-                            for layer in range(32): # iterate reasonably
-                                nid = mesh.node_map.get((ix, iy, layer))
-                                if nid is not None:
-                                    nodes.append(nid)
-                                    found_for_pad = True
-                    if not found_for_pad and debug_mode:
-                        self.log(f"  Pad {ref_des}.{pad_name} at ({px:.2f},{py:.2f}) not on mesh.")
+                # 3. Standard Loads
+                for load in rail.loads:
+                    nodes = self._get_mesh_nodes(mesh, load.component_ref.ref_des, load.pad_names, debug_mode)
+                    if not nodes: continue
+                    i_per_node = load.total_current / len(nodes)
+                    for nid in nodes:
+                        solver_loads.append({'node_id': nid, 'current': i_per_node})
                         
-                return list(set(nodes))
-
-            # Assemble Sources
-            for src in rail.sources:
-                nodes = get_mesh_nodes_for_component_pads(src.component_ref.ref_des, src.pad_names)
-                if not nodes:
-                    self.log(f"Warning: Source {src.component_ref.ref_des} has no connected mesh nodes.")
-                    continue
-                
-                # Voltage defined at Rail level
-                v_set = rail.nominal_voltage
-                for nid in nodes:
-                    solver_sources.append({'node_id': nid, 'voltage': v_set})
+                # 4. Downstream Regulators (Loads on THIS rail)
+                for reg in rail.child_regulators:
+                    # Find the output rail to calculate total load
+                    # (It should have been solved already due to topological sort)
+                    total_output_current = rail_total_current.get(reg.output_rail_name, 0.0)
                     
-            # Assemble Loads
-            for load in rail.loads:
-                nodes = get_mesh_nodes_for_component_pads(load.component_ref.ref_des, load.pad_names)
-                if not nodes:
-                    self.log(f"Warning: Load {load.component_ref.ref_des} has no connected mesh nodes.")
+                    if total_output_current == 0:
+                        if debug_mode:
+                            self.log(f"  Regulator {reg.name} has no load on output rail {reg.output_rail_name}")
+                        continue
+                    
+                    # Convert to input current based on regulator type
+                    if reg.reg_type == "LINEAR":
+                        input_current = total_output_current
+                    elif reg.reg_type == "SWITCHING":
+                        # Power-based conversion: P_in = P_out / efficiency
+                        # We need output rail voltage
+                        output_rail_v = 0.0
+                        for r in system_rails:
+                            if r.net_name == reg.output_rail_name:
+                                output_rail_v = r.nominal_voltage
+                                break
+                                
+                        p_out = total_output_current * output_rail_v
+                        p_in = p_out / reg.efficiency if reg.efficiency > 0 else p_out
+                        input_current = p_in / rail.nominal_voltage if rail.nominal_voltage > 0 else 0
+                    else:
+                        input_current = total_output_current
+                    
+                    if input_current == 0:
+                        continue
+                        
+                    # Accumulate this regulator's input current into the total for THIS rail
+                    rail_total_current[rail.net_name] += input_current
+                    
+                    # Apply load at regulator input pads
+                    nodes = self._get_mesh_nodes(mesh, reg.input_ref_des, reg.input_pad_names, debug_mode)
+                    if not nodes:
+                        self.log(f"  WARNING: Regulator {reg.name} input at {reg.input_ref_des} pads {reg.input_pad_names} found NO mesh nodes!")
+                        continue
+                    
+                    i_per_node = input_current / len(nodes)
+                    for nid in nodes:
+                        solver_loads.append({'node_id': nid, 'current': i_per_node})
+                    
+                    if debug_mode:
+                        self.log(f"  Regulator {reg.name} draws {input_current:.2f}A from {rail.net_name} ({reg.reg_type})")
+                    
+                    if input_current == 0:
+                        continue
+                    
+                    # Apply load at regulator input pads
+                    nodes = self._get_mesh_nodes(mesh, reg.input_ref_des, reg.input_pad_names, debug_mode)
+                    if not nodes:
+                        self.log(f"  WARNING: Regulator {reg.name} input at {reg.input_ref_des} pads {reg.input_pad_names} found NO mesh nodes!")
+                        continue
+                    
+                    i_per_node = input_current / len(nodes)
+                    for nid in nodes:
+                        solver_loads.append({'node_id': nid, 'current': i_per_node})
+                    
+                    if debug_mode:
+                        self.log(f"  Regulator {reg.name} draws {input_current:.2f}A from {rail.net_name} ({reg.reg_type})")
+                    
+                # C. Solve
+                if not solver_sources:
+                    self.log(f"  Warning: No sources for {rail.net_name}. Skipping solve.")
                     continue
-                
-                # Distribute current
-                # Default UNIFORM: Total / Node Count
-                i_per_node = load.total_current / len(nodes)
-                for nid in nodes:
-                    solver_loads.append({'node_id': nid, 'current': i_per_node})
-
-            # --- 4. Solve ---
-            if not solver_sources:
-                self.log("Error: No valid source nodes found on mesh. Cannot solve.")
-            else:
-                self.log("Solving...")
+                    
                 solver = Solver(debug=debug_mode, log_callback=self.log)
                 results = solver.solve(mesh, solver_sources, solver_loads)
                 
-                # Stats
+                # D. Store Results
                 v_vals = list(results.values())
-               
-                v_min = min(v_vals)
-                v_max = max(v_vals)
-                drop_abs = v_max - v_min
-                drop_pct = (drop_abs / rail.nominal_voltage * 100) if rail.nominal_voltage > 0 else 0
-                
-                res_str = f"Rail: {net_name}\n"
-                res_str += f"Nominal: {rail.nominal_voltage} V\n"
-                res_str += f"Min V: {v_min:.4f} V\n"
-                res_str += f"Max V: {v_max:.4f} V\n"
-                res_str += f"Max Drop: {drop_abs:.4f} V ({drop_pct:.2f}%)"
-                
-                self.result_text.SetValue(res_str)
-                self.log("Simulation Success.")
-                
-                # --- 5. Visualize ---
-                mesh.results = results
-                self.results_notebook.DeleteAllPages()
-
-                # Determine V_min/V_max for consistent scale
-                # Use rail voltage and drop % for scale
-                try:
-                    drop_pct_ui = float(self.txt_drop_pct.GetValue())
-                    if drop_pct_ui < 0: drop_pct_ui = 0
-                    if drop_pct_ui > 100: drop_pct_ui = 100
-                except:
-                    drop_pct_ui = 5.0
-                
-                v_max = rail.nominal_voltage
-                v_min = rail.nominal_voltage * (1.0 - drop_pct_ui / 100.0)
-
-                plotter = Plotter(debug=debug_mode)
-                
-                # Plot 3D
-                bmp_3d = plotter.plot_3d_mesh(mesh, stackup, vmin=v_min, vmax=v_max)
-                self._add_plot_tab("3D View", bmp_3d)
-
-                # Plot Layers
-                # Find unique layers in mesh
-                unique_layers = list(set(n[2] for n in mesh.node_coords.values()))
-                
-                # Sort by stackup order
-                if stackup and 'layer_order' in stackup:
-                    order_map = {lid: idx for idx, lid in enumerate(stackup['layer_order'])}
-                    unique_layers.sort(key=lambda lid: order_map.get(lid, 999))
+                if v_vals:
+                    v_min, v_max = min(v_vals), max(v_vals)
+                    drop = v_max - v_min
+                    self.system_results[rail.net_name] = {
+                        'mesh': mesh,
+                        'results': results,
+                        'stats': (v_min, v_max, drop)
+                    }
+                    self.log(f"  Solved {rail.net_name}: Drop {drop:.4f} V")
                 else:
-                    unique_layers.sort()
-                
-                for lid in unique_layers:
-                    # Get Layer Name
-                    l_name = str(lid)
-                    if stackup and 'copper' in stackup and lid in stackup['copper']:
-                        l_name = stackup['copper'][lid].get('name', str(lid))
-                    elif hasattr(self.board, 'GetLayerName'):
-                        try: l_name = self.board.GetLayerName(lid)
-                        except: pass
-                        
-                    bmp_2d = plotter.plot_layer_2d(mesh, lid, stackup, vmin=v_min, vmax=v_max, layer_name=l_name)
-                    self._add_plot_tab(l_name, bmp_2d)
+                    self.log(f"  Solved {rail.net_name}: No result.")
 
-                self.notebook.SetSelection(1) # Results Tab
-
+            # --- 3. Update UI ---
+            self._update_results_ui()
+            
         except Exception as e:
-            self.log(f"Exception: {e}")
-            import traceback
-            traceback.print_exc()
+             self.log(f"System Solve Error: {e}")
+             import traceback
+             traceback.print_exc()
 
     def _debug_plot_geo(self, extractor, geo):
         try:
@@ -433,6 +560,92 @@ class KiPIDA_MainDialog(wx.Dialog):
                 self.results_notebook.DeleteAllPages()
                 self._add_plot_tab("Mesh Debug", bmp)
         except: pass
+
+    def _update_results_ui(self):
+        # Populate text stats
+        txt = "System Simulation Results:\n==========================\n"
+        for net, data in self.system_results.items():
+            vmin, vmax, drop = data['stats']
+            txt += f"Rail: {net}\n"
+            txt += f"  Range: {vmin:.4f} - {vmax:.4f} V\n"
+            txt += f"  Drop:  {drop:.4f} V\n\n"
+        self.result_text.SetValue(txt)
+        
+        # Clear existing plot tabs
+        self.results_notebook.DeleteAllPages()
+        
+        if not self.system_results:
+            return
+        
+        # Get stackup once
+        try:
+            extractor = GeometryExtractor(self.board)
+            stackup = extractor.get_board_stackup()
+        except: 
+            stackup = None
+        
+        # Get Drop % from UI for coloring scale
+        try:
+            drop_pct_ui = float(self.txt_drop_pct.GetValue())
+            if drop_pct_ui < 0: drop_pct_ui = 0
+            if drop_pct_ui > 100: drop_pct_ui = 100
+        except:
+            drop_pct_ui = 5.0
+        
+        debug_mode = self.chk_debug.GetValue()
+        plotter = Plotter(debug=debug_mode)
+        
+        # Create nested tabs for each rail
+        for rail_name, data in self.system_results.items():
+            # Create rail-level notebook
+            rail_notebook = wx.Notebook(self.results_notebook)
+            
+            mesh = data['mesh']
+            mesh.results = data['results']
+            vmin, vmax, _ = data['stats']
+            
+            # Override vmin for plot based on drop %
+            nominal = vmax
+            plot_vmin = nominal * (1.0 - drop_pct_ui / 100.0)
+            
+            # Add 3D plot tab
+            bmp_3d = plotter.plot_3d_mesh(mesh, stackup, vmin=plot_vmin, vmax=vmax)
+            if bmp_3d:
+                page_3d = wx.ScrolledWindow(rail_notebook, style=wx.HSCROLL | wx.VSCROLL)
+                page_3d.SetScrollRate(10, 10)
+                img_ctrl_3d = wx.StaticBitmap(page_3d)
+                img_ctrl_3d.SetBitmap(bmp_3d)
+                sizer_3d = wx.BoxSizer(wx.VERTICAL)
+                sizer_3d.Add(img_ctrl_3d, 1, wx.CENTER | wx.ALL, 5)
+                page_3d.SetSizer(sizer_3d)
+                rail_notebook.AddPage(page_3d, "3D View")
+            
+            # Add layer tabs
+            unique_layers = list(set(n[2] for n in mesh.node_coords.values()))
+            unique_layers.sort()
+            
+            for lid in unique_layers:
+                # Get Layer Name
+                l_name = str(lid)
+                if stackup and 'copper' in stackup and lid in stackup['copper']:
+                    l_name = stackup['copper'][lid].get('name', str(lid))
+                
+                bmp_2d = plotter.plot_layer_2d(mesh, lid, stackup, vmin=plot_vmin, vmax=vmax, layer_name=l_name)
+                if bmp_2d:
+                    page_2d = wx.ScrolledWindow(rail_notebook, style=wx.HSCROLL | wx.VSCROLL)
+                    page_2d.SetScrollRate(10, 10)
+                    img_ctrl_2d = wx.StaticBitmap(page_2d)
+                    img_ctrl_2d.SetBitmap(bmp_2d)
+                    sizer_2d = wx.BoxSizer(wx.VERTICAL)
+                    sizer_2d.Add(img_ctrl_2d, 1, wx.CENTER | wx.ALL, 5)
+                    page_2d.SetSizer(sizer_2d)
+                    rail_notebook.AddPage(page_2d, l_name)
+            
+            # Add rail notebook as a page in the main results notebook
+            self.results_notebook.AddPage(rail_notebook, rail_name)
+        
+        # Switch to Results tab
+        self.notebook.SetSelection(1)
 
     def on_close(self, event):
         self.EndModal(wx.ID_CANCEL)
