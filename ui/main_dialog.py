@@ -16,7 +16,7 @@ from ui.power_tree_panel import PowerTreePanel
 from plotter import Plotter
 
 class KiPIDA_MainDialog(wx.Dialog):
-    def __init__(self, parent, board_adapter):
+    def __init__(self, parent, board_adapter, project=None):
         super(KiPIDA_MainDialog, self).__init__(parent, title="Ki-PIDA: Power Integrity Analyzer", 
                                                 style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
         
@@ -24,6 +24,7 @@ class KiPIDA_MainDialog(wx.Dialog):
         self.SetMinSize((800, 500))
         
         self.board = board_adapter
+        self.project = project
         
         self._init_ui()
         self.Center()
@@ -46,6 +47,12 @@ class KiPIDA_MainDialog(wx.Dialog):
         else:
              self.log(f"Board object connected: {type(self.board)}")
         
+        if self.project:
+            self.log(f"Project: {self.project.name} at {self.project.path}")
+        else:
+            self.log("WARNING: No project object available.")
+
+        
     def _init_ui(self):
         main_sizer = wx.BoxSizer(wx.VERTICAL)
         
@@ -54,7 +61,7 @@ class KiPIDA_MainDialog(wx.Dialog):
         
         # Tab 1: Configuration (New Power Tree Panel)
         self.tab_config = wx.Panel(self.notebook)
-        self.power_tree = PowerTreePanel(self.tab_config, self.board, log_callback=self.log)
+        self.power_tree = PowerTreePanel(self.tab_config, self.board, project=self.project, log_callback=self.log)
         
         # Config Tab Layout
         config_sizer = wx.BoxSizer(wx.VERTICAL)

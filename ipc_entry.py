@@ -46,19 +46,65 @@ def main():
     
     client = None
     board = None
+    project = None
     
     try:
         # early_log("Initializing kipy client...")
         client = kipy.KiCad(socket_path=socket_path, timeout_ms=3000)
         # early_log("Requesting board object...")
         board = client.get_board()
+        
+        # Try to get project info from board.document without calling get_project
+        # to avoid breaking board API access
+        project = None
+        if board and hasattr(board, 'document'):
+            try:
+                doc = board.document
+                # Document is a protobuf DocumentSpecifier with a nested 'project' field
+                
+                # Create a simple object with path and name attributes
+                class ProjectInfo:
+                    def __init__(self, doc):
+                        self.path = None
+                        self.name = None
+                        
+                        # Extract the 'project' field from DocumentSpecifier
+                        if hasattr(doc, 'ListFields'):
+                            fields = doc.ListFields()
+                            
+                            for field_desc, value in fields:
+                                field_name = field_desc.name
+                                
+                                # The 'project' field contains the project info
+                                if field_name == 'project':
+                                    # value is a protobuf with 'name' and 'path' attributes
+                                    if hasattr(value, 'path'):
+                                        self.path = value.path
+                                    if hasattr(value, 'name'):
+                                        self.name = value.name
+                                    break
+                        
+                        # If we have path but no name, extract from path
+                        if self.path and not self.name:
+                            import os
+                            self.name = os.path.basename(self.path)
+                
+                project = ProjectInfo(doc)
+                if project.path:
+                    early_log(f"Project: {project.name} at {project.path}")
+                else:
+                    early_log("Could not find project path in document")
+                    project = None
+            except Exception as e:
+                early_log(f"Failed to get project info from board.document: {e}")
+                import traceback
+                early_log(traceback.format_exc())
+                project = None
+        else:
+            early_log("Board has no document attribute")
+        
         if board:
             early_log("Ki-PIDA connected successfully.")
-            # Quick sanity check
-            if hasattr(board, 'footprints'):
-                 pass
-            else:
-                early_log("WARNING: Board object retrieved but missing 'footprints' attribute.")
         else:
             early_log("ERROR: client.get_board() returned None.")
     except Exception as e:
@@ -71,7 +117,7 @@ def main():
     
     # 3. Create and Show Dialog
     try:
-        dlg = KiPIDA_MainDialog(None, board_adapter=board) 
+        dlg = KiPIDA_MainDialog(None, board_adapter=board, project=project) 
     except Exception as e:
         early_log(f"CRITICAL: Failed to create KiPIDA_MainDialog: {e}")
         import traceback
