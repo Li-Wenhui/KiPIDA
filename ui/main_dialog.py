@@ -80,6 +80,11 @@ class KiPIDA_MainDialog(wx.Dialog):
         sett_sizer.Add(lbl_drop, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
         sett_sizer.Add(self.txt_drop_pct, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 20)
         
+        lbl_dens = wx.StaticText(self.tab_config, label="Max Dens (A/mm^2):")
+        self.txt_max_dens = wx.TextCtrl(self.tab_config, value="45", size=(60, -1))
+        sett_sizer.Add(lbl_dens, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        sett_sizer.Add(self.txt_max_dens, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 20)
+        
         self.chk_debug = wx.CheckBox(self.tab_config, label="Enable Debug Log")
         sett_sizer.Add(self.chk_debug, 0, wx.ALIGN_CENTER_VERTICAL)
         
@@ -591,6 +596,12 @@ class KiPIDA_MainDialog(wx.Dialog):
             if drop_pct_ui > 100: drop_pct_ui = 100
         except:
             drop_pct_ui = 5.0
+            
+        try:
+            max_dens_ui = float(self.txt_max_dens.GetValue())
+            if max_dens_ui <= 0: max_dens_ui = 45.0
+        except:
+            max_dens_ui = 45.0
         
         debug_mode = self.chk_debug.GetValue()
         plotter = Plotter(debug=debug_mode)
@@ -635,7 +646,7 @@ class KiPIDA_MainDialog(wx.Dialog):
                     l_name = stackup['copper'][lid].get('name', str(lid))
                 
                 bmp_2d_v = plotter.plot_layer_2d(mesh, lid, stackup, vmin=plot_vmin, vmax=vmax, layer_name=l_name + " (Voltage)")
-                bmp_2d_j = plotter.plot_layer_current_density(mesh, lid, density_map, stackup, layer_name=l_name + " (Current Density)")
+                bmp_2d_j = plotter.plot_layer_current_density(mesh, lid, density_map, stackup, layer_name=l_name + " (Current Density)", vmax=max_dens_ui)
                 
                 if bmp_2d_v or bmp_2d_j:
                     page_layer = wx.ScrolledWindow(rail_notebook, style=wx.HSCROLL | wx.VSCROLL)

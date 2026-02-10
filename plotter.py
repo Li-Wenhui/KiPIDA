@@ -215,7 +215,7 @@ class Plotter:
             
         return density_map
 
-    def plot_layer_current_density(self, mesh, layer_id, density_map, stackup=None, layer_name=None):
+    def plot_layer_current_density(self, mesh, layer_id, density_map, stackup=None, layer_name=None, vmax=None):
         """
         Generates a 2D plot (heatmap) of Current Density for a specific layer.
         Returns a wx.Bitmap.
@@ -233,22 +233,25 @@ class Plotter:
                 plt.close(fig)
                 return None
             
-            max_j = 0
+            curr_max_j = 0
             for nid in nodes_on_layer:
                 coords = mesh.node_coords[nid]
                 xs.append(coords[0])
                 ys.append(-coords[1]) # Invert Y
                 val = density_map.get(nid, 0.0)
                 js.append(val)
-                if val > max_j: max_j = val
+                if val > curr_max_j: curr_max_j = val
                 
             if not xs:
                 plt.close(fig)
                 return None
+            
+            # Use provided vmax if available, else auto-scale
+            plot_vmax = vmax if vmax is not None else (curr_max_j if curr_max_j > 0 else 1.0)
 
             # Scatter plot with 'plasma' or 'inferno' for intensity
             # cmap 'plasma' is good for perceptually uniform intensity
-            sc = ax.scatter(xs, ys, c=js, cmap='plasma', s=20, vmin=0, vmax=max_j if max_j > 0 else 1.0)
+            sc = ax.scatter(xs, ys, c=js, cmap='plasma', s=20, vmin=0, vmax=plot_vmax)
             
             if has_data:
                 plt.colorbar(sc, label='Current Density ($A/mm^2$)')
