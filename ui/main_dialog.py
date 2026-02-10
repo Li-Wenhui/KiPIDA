@@ -604,6 +604,10 @@ class KiPIDA_MainDialog(wx.Dialog):
             mesh.results = data['results']
             vmin, vmax, _ = data['stats']
             
+            # Calculate Current Density Map
+            density_map = plotter._calculate_current_density_map(mesh, stackup)
+            max_j_val = max(density_map.values()) if density_map else 0.0
+            
             # Override vmin for plot based on drop %
             nominal = vmax
             plot_vmin = nominal * (1.0 - drop_pct_ui / 100.0)
@@ -630,16 +634,33 @@ class KiPIDA_MainDialog(wx.Dialog):
                 if stackup and 'copper' in stackup and lid in stackup['copper']:
                     l_name = stackup['copper'][lid].get('name', str(lid))
                 
-                bmp_2d = plotter.plot_layer_2d(mesh, lid, stackup, vmin=plot_vmin, vmax=vmax, layer_name=l_name)
-                if bmp_2d:
-                    page_2d = wx.ScrolledWindow(rail_notebook, style=wx.HSCROLL | wx.VSCROLL)
-                    page_2d.SetScrollRate(10, 10)
-                    img_ctrl_2d = wx.StaticBitmap(page_2d)
-                    img_ctrl_2d.SetBitmap(bmp_2d)
-                    sizer_2d = wx.BoxSizer(wx.VERTICAL)
-                    sizer_2d.Add(img_ctrl_2d, 1, wx.CENTER | wx.ALL, 5)
-                    page_2d.SetSizer(sizer_2d)
-                    rail_notebook.AddPage(page_2d, l_name)
+                bmp_2d_v = plotter.plot_layer_2d(mesh, lid, stackup, vmin=plot_vmin, vmax=vmax, layer_name=l_name + " (Voltage)")
+                bmp_2d_j = plotter.plot_layer_current_density(mesh, lid, density_map, stackup, layer_name=l_name + " (Current Density)")
+                
+                if bmp_2d_v or bmp_2d_j:
+                    page_layer = wx.ScrolledWindow(rail_notebook, style=wx.HSCROLL | wx.VSCROLL)
+                    page_layer.SetScrollRate(10, 10)
+                    
+                    layer_sizer = wx.BoxSizer(wx.VERTICAL)
+                    
+                    # Voltage Plot
+                    if bmp_2d_v:
+                        img_ctrl_v = wx.StaticBitmap(page_layer)
+                        img_ctrl_v.SetBitmap(bmp_2d_v)
+                        layer_sizer.Add(img_ctrl_v, 0, wx.CENTER | wx.ALL, 5)
+                        
+                    # Current Density Plot
+                    if bmp_2d_j:
+                        # Add separator or spacing
+                        line = wx.StaticLine(page_layer)
+                        layer_sizer.Add(line, 0, wx.EXPAND | wx.ALL, 10)
+                        
+                        img_ctrl_j = wx.StaticBitmap(page_layer)
+                        img_ctrl_j.SetBitmap(bmp_2d_j)
+                        layer_sizer.Add(img_ctrl_j, 0, wx.CENTER | wx.ALL, 5)
+
+                    page_layer.SetSizer(layer_sizer)
+                    rail_notebook.AddPage(page_layer, l_name)
             
             # Add rail notebook as a page in the main results notebook
             self.results_notebook.AddPage(rail_notebook, rail_name)
