@@ -380,9 +380,53 @@ class KiPIDA_MainDialog(wx.Dialog):
                         
                 # 4. Downstream Regulators (Loads on THIS rail)
                 for reg in rail.child_regulators:
-                    # It draws current from THIS rail to feed 'reg.output_rail_name'
-                    # Location: reg.input_ref_des, reg.input_pad_names
-                    self.log(f"  Notice: Regulator {reg.name} load at {reg.input_ref_des} not fully calculated.")
+                    # Find the output rail to calculate total load
+                    output_rail = None
+                    for r in system_rails:
+                        if r.net_name == reg.output_rail_name:
+                            output_rail = r
+                            break
+                    
+                    if not output_rail:
+                        if debug_mode:
+                            self.log(f"  Warning: Regulator {reg.name} output rail '{reg.output_rail_name}' not found.")
+                        continue
+                    
+                    # Calculate total load on output rail (direct loads only for now)
+                    total_output_current = sum(load.total_current for load in output_rail.loads)
+                    
+                    if total_output_current == 0:
+                        if debug_mode:
+                            self.log(f"  Regulator {reg.name} has no load on output rail {reg.output_rail_name}")
+                        continue
+                    
+                    # Convert to input current based on regulator type
+                    if reg.reg_type == "LINEAR":
+                        input_current = total_output_current
+                    elif reg.reg_type == "SWITCHING":
+                        # Power-based conversion: P_in = P_out / efficiency
+                        p_out = total_output_current * output_rail.nominal_voltage
+                        p_in = p_out / reg.efficiency if reg.efficiency > 0 else p_out
+                        input_current = p_in / rail.nominal_voltage if rail.nominal_voltage > 0 else 0
+                    else:
+                        # Default to linear behavior
+                        input_current = total_output_current
+                    
+                    if input_current == 0:
+                        continue
+                    
+                    # Apply load at regulator input pads
+                    nodes = self._get_mesh_nodes(mesh, reg.input_ref_des, reg.input_pad_names, debug_mode)
+                    if not nodes:
+                        self.log(f"  WARNING: Regulator {reg.name} input at {reg.input_ref_des} pads {reg.input_pad_names} found NO mesh nodes!")
+                        continue
+                    
+                    i_per_node = input_current / len(nodes)
+                    for nid in nodes:
+                        solver_loads.append({'node_id': nid, 'current': i_per_node})
+                    
+                    if debug_mode:
+                        self.log(f"  Regulator {reg.name} draws {input_current:.2f}A from {rail.net_name} ({reg.reg_type})")
                     
                 # C. Solve
                 if not solver_sources:
