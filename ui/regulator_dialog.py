@@ -1,4 +1,8 @@
 import wx
+try:
+    from models import generate_regulator_name
+except ImportError:
+    from ..models import generate_regulator_name
 
 class RegulatorDialog(wx.Dialog):
     def __init__(self, parent, title, available_rails, discoverer, input_rail=None, output_rail=None):
@@ -25,7 +29,7 @@ class RegulatorDialog(wx.Dialog):
         # Name
         hbox_name = wx.BoxSizer(wx.HORIZONTAL)
         hbox_name.Add(wx.StaticText(self, label="Regulator Name:"), 0, wx.ALIGN_CENTER_VERTICAL|wx.RIGHT, 5)
-        self.txt_name = wx.TextCtrl(self)
+        self.txt_name = wx.TextCtrl(self, style=wx.TE_READONLY)
         hbox_name.Add(self.txt_name, 1, wx.EXPAND)
         vbox.Add(hbox_name, 0, wx.EXPAND | wx.ALL, 10)
         
@@ -129,6 +133,7 @@ class RegulatorDialog(wx.Dialog):
         pads = self.input_comps.get(ref, [])
         pad_names = [getattr(p, 'number', getattr(p, 'name', str(p))) for p in pads]
         self.lst_input_pads.Set(pad_names) 
+        self._update_auto_name()
 
     def _on_output_rail_change(self, event):
         rail = self.cmb_output_rail.GetValue()
@@ -147,12 +152,21 @@ class RegulatorDialog(wx.Dialog):
         pads = self.output_comps.get(ref, [])
         pad_names = [getattr(p, 'number', getattr(p, 'name', str(p))) for p in pads]
         self.lst_output_pads.Set(pad_names)
+        self._update_auto_name()
 
     def on_type_change(self, event):
         if self.cmb_type.GetValue() == "SWITCHING":
             self.txt_eff.Enable()
         else:
             self.txt_eff.Disable()
+
+
+    def _update_auto_name(self):
+        inp_ref = self.cmb_input_comp.GetValue()
+        out_ref = self.cmb_output_comp.GetValue()
+        
+        name = generate_regulator_name(inp_ref, out_ref)
+        self.txt_name.ChangeValue(name)
     
     def prepopulate(self, regulator):
         """Prepopulate dialog with existing regulator data."""
