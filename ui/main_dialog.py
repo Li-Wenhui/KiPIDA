@@ -374,6 +374,7 @@ class KiPIDA_MainDialog(wx.Dialog):
                 return
             
             self.system_results = {} # rail_name -> { mesh, results, stats }
+            rail_total_current = {rail.net_name: 0.0 for rail in system_rails}
             
             # 2. Sort rails in dependency order and check for cycles
             try:
@@ -388,6 +389,9 @@ class KiPIDA_MainDialog(wx.Dialog):
             # 3. Solve each rail in topological order
             for rail in sorted_rails:
                 self.log(f"Processing Rail: {rail.net_name} (Sources: {len(rail.sources)}, Loads: {len(rail.loads)})")
+                
+                # Update total current for this rail (starting with direct loads)
+                rail_total_current[rail.net_name] = sum(load.total_current for load in rail.loads)
                 
                 # A. Get Geometry & Mesh
                 geo = extractor.get_net_geometry(rail.net_name)
@@ -448,19 +452,8 @@ class KiPIDA_MainDialog(wx.Dialog):
                 # 4. Downstream Regulators (Loads on THIS rail)
                 for reg in rail.child_regulators:
                     # Find the output rail to calculate total load
-                    output_rail = None
-                    for r in system_rails:
-                        if r.net_name == reg.output_rail_name:
-                            output_rail = r
-                            break
-                    
-                    if not output_rail:
-                        if debug_mode:
-                            self.log(f"  Warning: Regulator {reg.name} output rail '{reg.output_rail_name}' not found.")
-                        continue
-                    
-                    # Calculate total load on output rail (direct loads only for now)
-                    total_output_current = sum(load.total_current for load in output_rail.loads)
+                    # (It should have been solved already due to topological sort)
+                    total_output_current = rail_total_current.get(reg.output_rail_name, 0.0)
                     
                     if total_output_current == 0:
                         if debug_mode:
@@ -472,12 +465,37 @@ class KiPIDA_MainDialog(wx.Dialog):
                         input_current = total_output_current
                     elif reg.reg_type == "SWITCHING":
                         # Power-based conversion: P_in = P_out / efficiency
-                        p_out = total_output_current * output_rail.nominal_voltage
+                        # We need output rail voltage
+                        output_rail_v = 0.0
+                        for r in system_rails:
+                            if r.net_name == reg.output_rail_name:
+                                output_rail_v = r.nominal_voltage
+                                break
+                                
+                        p_out = total_output_current * output_rail_v
                         p_in = p_out / reg.efficiency if reg.efficiency > 0 else p_out
                         input_current = p_in / rail.nominal_voltage if rail.nominal_voltage > 0 else 0
                     else:
-                        # Default to linear behavior
                         input_current = total_output_current
+                    
+                    if input_current == 0:
+                        continue
+                        
+                    # Accumulate this regulator's input current into the total for THIS rail
+                    rail_total_current[rail.net_name] += input_current
+                    
+                    # Apply load at regulator input pads
+                    nodes = self._get_mesh_nodes(mesh, reg.input_ref_des, reg.input_pad_names, debug_mode)
+                    if not nodes:
+                        self.log(f"  WARNING: Regulator {reg.name} input at {reg.input_ref_des} pads {reg.input_pad_names} found NO mesh nodes!")
+                        continue
+                    
+                    i_per_node = input_current / len(nodes)
+                    for nid in nodes:
+                        solver_loads.append({'node_id': nid, 'current': i_per_node})
+                    
+                    if debug_mode:
+                        self.log(f"  Regulator {reg.name} draws {input_current:.2f}A from {rail.net_name} ({reg.reg_type})")
                     
                     if input_current == 0:
                         continue

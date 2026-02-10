@@ -74,19 +74,24 @@ class PowerRail:
     def add_child_regulator(self, reg: VoltageRegulator):
         self.child_regulators.append(reg)
 
-def generate_regulator_name(input_ref_des: str, output_ref_des: str) -> str:
+def generate_regulator_name(input_ref_des: str, output_ref_des: str, output_rail_name: str = "") -> str:
     """
-    Generate a regulator name based on input and output components.
-    If input == output, name is just the component ref.
-    Otherwise, name is "input -> output".
+    Generate a regulator name based on input and output components and rails.
+    If input == output, name is "input (output_rail)".
+    Otherwise, name is "input -> output (output_rail)".
     """
+    name = ""
     if not input_ref_des:
-        return output_ref_des if output_ref_des else ""
-    if not output_ref_des:
-        return input_ref_des
-        
-    if input_ref_des == output_ref_des:
-        return input_ref_des
+        name = output_ref_des if output_ref_des else ""
+    elif not output_ref_des:
+        name = input_ref_des
+    elif input_ref_des == output_ref_des:
+        name = input_ref_des
     else:
-        return f"{input_ref_des} -> {output_ref_des}"
+        name = f"{input_ref_des} -> {output_ref_des}"
+        
+    if output_rail_name:
+        name += f" ({output_rail_name})"
+        
+    return name
 

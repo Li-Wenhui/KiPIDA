@@ -146,6 +146,7 @@ class RegulatorDialog(wx.Dialog):
         else:
             self.cmb_output_comp.Clear()
             self.lst_output_pads.Clear()
+            self._update_auto_name()
             
     def _on_output_comp_change(self, event):
         ref = self.cmb_output_comp.GetValue()
@@ -164,8 +165,9 @@ class RegulatorDialog(wx.Dialog):
     def _update_auto_name(self):
         inp_ref = self.cmb_input_comp.GetValue()
         out_ref = self.cmb_output_comp.GetValue()
+        out_rail = self.cmb_output_rail.GetValue()
         
-        name = generate_regulator_name(inp_ref, out_ref)
+        name = generate_regulator_name(inp_ref, out_ref, out_rail)
         self.txt_name.ChangeValue(name)
     
     def prepopulate(self, regulator):
