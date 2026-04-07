@@ -17,18 +17,18 @@ from plotter import Plotter
 
 class KiPIDA_MainDialog(wx.Dialog):
     def __init__(self, parent, board_adapter, project=None):
-        super(KiPIDA_MainDialog, self).__init__(parent, title="Ki-PIDA: Power Integrity Analyzer", 
+        super(KiPIDA_MainDialog, self).__init__(parent, title="Ki-PIDA: 电源完整性分析",
                                                 style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
-        
+
         self.SetSize((1000, 700))
         self.SetMinSize((800, 500))
-        
+
         self.board = board_adapter
         self.project = project
-        
+
         self._init_ui()
         self.Center()
-        
+
         # Redirect stdout/stderr to our log window
         class LogRedirector:
             def __init__(self, log_func):
@@ -37,137 +37,137 @@ class KiPIDA_MainDialog(wx.Dialog):
                 if msg.strip():
                      self.log_func(msg.strip())
             def flush(self): pass
-            
+
         sys.stdout = LogRedirector(self.log)
         sys.stderr = LogRedirector(self.log)
-        
+
         self.log("Ki-PIDA UI Initialized.")
         if not self.board:
              self.log("ERROR: No board object connected. Plugin will not function properly.")
         else:
              self.log(f"Board object connected: {type(self.board)}")
-        
+
         if self.project:
             self.log(f"Project: {self.project.name} at {self.project.path}")
         else:
             self.log("WARNING: No project object available.")
 
-        
+
     def _init_ui(self):
         main_sizer = wx.BoxSizer(wx.VERTICAL)
-        
+
         # 1. Notebook for tabs
         self.notebook = wx.Notebook(self)
-        
+
         # Tab 1: Configuration (New Power Tree Panel)
         self.tab_config = wx.Panel(self.notebook)
         self.power_tree = PowerTreePanel(self.tab_config, self.board, project=self.project, log_callback=self.log)
-        
+
         # Config Tab Layout
         config_sizer = wx.BoxSizer(wx.VERTICAL)
         config_sizer.Add(self.power_tree, 1, wx.EXPAND | wx.ALL, 5)
-        
+
         # Global Settings (Grid Size, Drop %, Debug)
         sett_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        
-        lbl_grid = wx.StaticText(self.tab_config, label="Mesh Resolution (mm):")
+
+        lbl_grid = wx.StaticText(self.tab_config, label="网格精度（mm）：")
         self.txt_grid_size = wx.TextCtrl(self.tab_config, value="0.1", size=(60, -1))
         sett_sizer.Add(lbl_grid, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
         sett_sizer.Add(self.txt_grid_size, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 20)
-        
-        lbl_drop = wx.StaticText(self.tab_config, label="Max Drop %:")
+
+        lbl_drop = wx.StaticText(self.tab_config, label="最大压降 %：")
         self.txt_drop_pct = wx.TextCtrl(self.tab_config, value="5", size=(60, -1))
         sett_sizer.Add(lbl_drop, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
         sett_sizer.Add(self.txt_drop_pct, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 20)
-        
-        lbl_dens = wx.StaticText(self.tab_config, label="Max Dens (A/mm^2):")
+
+        lbl_dens = wx.StaticText(self.tab_config, label="最大密度（A/mm^2）：")
         self.txt_max_dens = wx.TextCtrl(self.tab_config, value="45", size=(60, -1))
         sett_sizer.Add(lbl_dens, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
         sett_sizer.Add(self.txt_max_dens, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 20)
-        
-        self.chk_debug = wx.CheckBox(self.tab_config, label="Enable Debug Log")
+
+        self.chk_debug = wx.CheckBox(self.tab_config, label="输出调试日志")
         sett_sizer.Add(self.chk_debug, 0, wx.ALIGN_CENTER_VERTICAL)
-        
+
         config_sizer.Add(sett_sizer, 0, wx.EXPAND | wx.ALL, 5)
         self.tab_config.SetSizer(config_sizer)
-        
-        self.notebook.AddPage(self.tab_config, "Power Tree & Config")
-        
+
+        self.notebook.AddPage(self.tab_config, "电源树配置")
+
         # Tab 2: Results
         self.tab_results = wx.Panel(self.notebook)
         self._init_results_tab(self.tab_results)
-        self.notebook.AddPage(self.tab_results, "Results")
-        
+        self.notebook.AddPage(self.tab_results, "结果")
+
         # Tab 3: Log/Debug
         self.tab_log = wx.Panel(self.notebook)
         self._init_log_tab(self.tab_log)
-        self.notebook.AddPage(self.tab_log, "Log")
-        
+        self.notebook.AddPage(self.tab_log, "日志")
+
         main_sizer.Add(self.notebook, 1, wx.EXPAND | wx.ALL, 5)
-        
+
         # 2. Action Buttons (Bottom)
         btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        
-        self.btn_run = wx.Button(self, label="Run Simulation")
-        self.btn_cancel = wx.Button(self, wx.ID_CANCEL, "Close")
-        
+
+        self.btn_run = wx.Button(self, label="运行仿真")
+        self.btn_cancel = wx.Button(self, wx.ID_CANCEL, "关闭")
+
         btn_sizer.AddStretchSpacer()
         btn_sizer.Add(self.btn_run, 0, wx.ALL, 5)
         btn_sizer.Add(self.btn_cancel, 0, wx.ALL, 5)
-        
+
         main_sizer.Add(btn_sizer, 0, wx.EXPAND | wx.ALL, 5)
-        
+
         self.SetSizer(main_sizer)
-        
+
         # Bind events
         self.btn_run.Bind(wx.EVT_BUTTON, self.on_run)
         self.btn_cancel.Bind(wx.EVT_BUTTON, self.on_close)
-        
+
         # Auto-scan board after UI is ready
         wx.CallAfter(self.power_tree.auto_scan)
-    
+
     def _init_results_tab(self, parent):
         sizer = wx.BoxSizer(wx.VERTICAL)
-        
+
         # Splitter: Top=Text Stats, Bottom=Notebook for plots
         self.result_splitter = wx.SplitterWindow(parent)
-        
+
         self.pnl_text = wx.Panel(self.result_splitter)
         text_sizer = wx.BoxSizer(wx.VERTICAL)
         self.result_text = wx.TextCtrl(self.pnl_text, style=wx.TE_MULTILINE | wx.TE_READONLY)
         text_sizer.Add(self.result_text, 1, wx.EXPAND | wx.ALL, 5)
         self.pnl_text.SetSizer(text_sizer)
-        
+
         self.pnl_plots = wx.Panel(self.result_splitter)
         plot_sizer = wx.BoxSizer(wx.VERTICAL)
-        
+
         # Notebook for results (3D, Layer1, Layer2...)
         self.results_notebook = wx.Notebook(self.pnl_plots)
         plot_sizer.Add(self.results_notebook, 1, wx.EXPAND | wx.ALL, 0)
-        
+
         self.pnl_plots.SetSizer(plot_sizer)
-        
+
         self.result_splitter.SplitHorizontally(self.pnl_text, self.pnl_plots, 100)
         self.result_splitter.SetMinimumPaneSize(50)
-        
+
         sizer.Add(self.result_splitter, 1, wx.EXPAND | wx.ALL, 5)
         parent.SetSizer(sizer)
 
     def _add_plot_tab(self, title, bitmap):
         """Helper to add a plot tab securely."""
         if not bitmap: return
-        
+
         # Create a ScrolledWindow for the plot
         page = wx.ScrolledWindow(self.results_notebook, style=wx.HSCROLL | wx.VSCROLL)
         page.SetScrollRate(10, 10)
-        
+
         img_ctrl = wx.StaticBitmap(page)
         img_ctrl.SetBitmap(bitmap)
-        
+
         sizer = wx.BoxSizer(wx.VERTICAL)
         sizer.Add(img_ctrl, 1, wx.CENTER | wx.ALL, 5)
         page.SetSizer(sizer)
-        
+
         self.results_notebook.AddPage(page, title)
 
 
@@ -182,7 +182,7 @@ class KiPIDA_MainDialog(wx.Dialog):
         self.log_ctrl.AppendText(msg + "\n")
         self.log_ctrl.ShowPosition(self.log_ctrl.GetLastPosition())
         wx.SafeYield()
-        
+
     def to_mm(self, val_nm):
         return val_nm / 1e6
 
@@ -190,7 +190,7 @@ class KiPIDA_MainDialog(wx.Dialog):
         if debug_mode:
             self.log(f"  [_get_mesh_nodes] Looking up {ref_des} pads={pad_names}")
         nodes = []
-        
+
         # Helper to get attribute value (property or getter)
         def _get_val(obj, attr_name, default=None):
             if obj is None: return default
@@ -207,7 +207,7 @@ class KiPIDA_MainDialog(wx.Dialog):
                         if val is not None: return val
                     except: pass
             return default
-        
+
         # Helper to get board items (same pattern as discovery.py)
         def get_board_items(attr_name):
             if hasattr(self.board, attr_name):
@@ -217,11 +217,11 @@ class KiPIDA_MainDialog(wx.Dialog):
                 try: return getattr(self.board, method_name)()
                 except: pass
             return []
-        
+
         # Find the footprint
         found_fp = None
         footprints = get_board_items('footprints')
-        
+
         for fp in footprints:
             # Get reference (same logic as discovery.py)
             ref = _get_val(fp, 'reference', _get_val(fp, 'ref_des', ''))
@@ -232,21 +232,21 @@ class KiPIDA_MainDialog(wx.Dialog):
                     text = _get_val(ref_field, 'text')
                     if text:
                         ref = _get_val(text, 'value', '')
-            
+
             if ref == ref_des:
                 found_fp = fp
                 break
-        
+
         if not found_fp:
             if debug_mode: self.log(f"  Warning: Footprint {ref_des} not found.")
             return []
-        
+
         # Get pads (same logic as discovery.py)
         pads = _get_val(found_fp, 'pads')
         if pads is None:
             defn = _get_val(found_fp, 'definition')
             pads = _get_val(defn, 'pads', [])
-        
+
         target_pads = []
         if not pad_names:
             target_pads = pads  # All pads
@@ -256,18 +256,18 @@ class KiPIDA_MainDialog(wx.Dialog):
                 pad_num = _get_val(p, 'number', _get_val(p, 'name', ''))
                 if pad_num in pad_names:
                     target_pads.append(p)
-        
+
         if not target_pads:
             if debug_mode: self.log(f"  No pads found for {ref_des} matching {pad_names}")
             return []
-        
+
         origin = mesh.grid_origin
         gs = mesh.grid_step
-        
+
         for p in target_pads:
             pos = _get_val(p, 'position')
             if not pos: continue
-            
+
             # Handle KiCad/Protobuf position types
             px, py = 0, 0
             if hasattr(pos, 'x') and hasattr(pos, 'y'):
@@ -276,16 +276,16 @@ class KiPIDA_MainDialog(wx.Dialog):
             elif hasattr(pos, '__getitem__'):
                 px = pos[0]
                 py = pos[1]
-            
+
             # Convert to mm if likely in nm (KiCad native)
             # Heuristic: if > 10000, assume nm
             if abs(px) > 10000 or abs(py) > 10000:
                 px /= 1e6
                 py /= 1e6
-            
+
             tx = int(round((px - origin[0]) / gs))
             ty = int(round((py - origin[1]) / gs))
-            
+
             # Search 3x3 neighborhood across layers
             found_any = False
             for dx in [-1, 0, 1]:
@@ -295,10 +295,10 @@ class KiPIDA_MainDialog(wx.Dialog):
                         if nid is not None:
                             nodes.append(nid)
                             found_any = True
-            
+
             if not found_any and debug_mode:
                 self.log(f"  Pad {ref_des} at ({px:.2f},{py:.2f}) not on mesh.")
-        
+
         return list(set(nodes))
 
     def _build_rail_dependency_graph(self, system_rails):
@@ -307,15 +307,15 @@ class KiPIDA_MainDialog(wx.Dialog):
         Returns: dict mapping rail_name -> list of rails it depends on
         """
         graph = {rail.net_name: [] for rail in system_rails}
-        
+
         for rail in system_rails:
             for reg in rail.child_regulators:
                 # reg.output_rail_name depends on rail.net_name (input)
                 if reg.output_rail_name in graph:
                     graph[reg.output_rail_name].append(rail.net_name)
-        
+
         return graph
-    
+
     def _topological_sort_rails(self, system_rails):
         """
         Sort rails in dependency order (leaves first, roots last).
@@ -323,37 +323,37 @@ class KiPIDA_MainDialog(wx.Dialog):
         Returns: list of PowerRail objects in solve order
         """
         graph = self._build_rail_dependency_graph(system_rails)
-        
+
         # DFS-based topological sort with cycle detection
         visited = set()
         rec_stack = set()  # Recursion stack for cycle detection
         result = []
-        
+
         def dfs(rail_name):
             if rail_name in rec_stack:
                 raise ValueError(f"Cycle detected in power rail dependencies involving '{rail_name}'")
-            
+
             if rail_name in visited:
                 return
-            
+
             visited.add(rail_name)
             rec_stack.add(rail_name)
-            
+
             # Visit dependencies first
             for dep in graph.get(rail_name, []):
                 dfs(dep)
-            
+
             rec_stack.remove(rail_name)
             result.append(rail_name)
-        
+
         # Process all rails
         for rail in system_rails:
             if rail.net_name not in visited:
                 dfs(rail.net_name)
-        
+
         # Reverse to get leaves-first order (output rails before input rails)
         result.reverse()
-        
+
         # Convert rail names back to PowerRail objects
         rail_map = {r.net_name: r for r in system_rails}
         return [rail_map[name] for name in result]
@@ -364,23 +364,23 @@ class KiPIDA_MainDialog(wx.Dialog):
         if not system_rails:
              wx.MessageBox("No power rails defined.")
              return
-             
+
         self.notebook.SetSelection(2) # Switch to Log
         self.log(f"--- Starting System Simulation ({len(system_rails)} rails) ---")
-        
+
         try:
             debug_mode = self.chk_debug.GetValue()
-            
+
             extractor = GeometryExtractor(self.board, debug=debug_mode, log_callback=self.log)
             try:
                 stackup = extractor.get_board_stackup()
             except Exception as e:
                 self.log(f"Error extracting stackup: {e}")
                 return
-            
+
             self.system_results = {} # rail_name -> { mesh, results, stats }
             rail_total_current = {rail.net_name: 0.0 for rail in system_rails}
-            
+
             # 2. Sort rails in dependency order and check for cycles
             try:
                 sorted_rails = self._topological_sort_rails(system_rails)
@@ -390,36 +390,36 @@ class KiPIDA_MainDialog(wx.Dialog):
                 self.log(f"ERROR: {e}")
                 wx.MessageBox(str(e), "Power Rail Cycle Detected", wx.OK | wx.ICON_ERROR)
                 return
-            
+
             # 3. Solve each rail in topological order
             for rail in sorted_rails:
                 self.log(f"Processing Rail: {rail.net_name} (Sources: {len(rail.sources)}, Loads: {len(rail.loads)})")
-                
+
                 # Update total current for this rail (starting with direct loads)
                 rail_total_current[rail.net_name] = sum(load.total_current for load in rail.loads)
-                
+
                 # A. Get Geometry & Mesh
                 geo = extractor.get_net_geometry(rail.net_name)
                 if not geo:
                     self.log(f"  Skipping {rail.net_name}: No geometry.")
                     continue
-                    
+
                 try:
                     gs = float(self.txt_grid_size.GetValue())
                     if gs < 0.01: gs = 0.01
                 except: gs = 0.1
-                
+
                 mesher = Mesher(self.board, debug=debug_mode, log_callback=self.log)
                 mesh = mesher.generate_mesh(rail.net_name, geo, stackup, grid_size_mm=gs)
-                
+
                 if len(mesh.nodes) == 0:
                      self.log(f"  Skipping {rail.net_name}: Mesh empty.")
                      continue
-                     
+
                 # B. Map Sources & Loads
                 solver_sources = []
                 solver_loads = []
-                
+
                 # 1. Standard Sources
                 for src in rail.sources:
                     nodes = self._get_mesh_nodes(mesh, src.component_ref.ref_des, src.pad_names, debug_mode)
@@ -445,7 +445,7 @@ class KiPIDA_MainDialog(wx.Dialog):
                             v_out = rail.nominal_voltage # Output target IS the rail voltage
                             for nid in nodes:
                                 solver_sources.append({'node_id': nid, 'voltage': v_out})
-                                
+
                 # 3. Standard Loads
                 for load in rail.loads:
                     nodes = self._get_mesh_nodes(mesh, load.component_ref.ref_des, load.pad_names, debug_mode)
@@ -453,18 +453,18 @@ class KiPIDA_MainDialog(wx.Dialog):
                     i_per_node = load.total_current / len(nodes)
                     for nid in nodes:
                         solver_loads.append({'node_id': nid, 'current': i_per_node})
-                        
+
                 # 4. Downstream Regulators (Loads on THIS rail)
                 for reg in rail.child_regulators:
                     # Find the output rail to calculate total load
                     # (It should have been solved already due to topological sort)
                     total_output_current = rail_total_current.get(reg.output_rail_name, 0.0)
-                    
+
                     if total_output_current == 0:
                         if debug_mode:
                             self.log(f"  Regulator {reg.name} has no load on output rail {reg.output_rail_name}")
                         continue
-                    
+
                     # Convert to input current based on regulator type
                     if reg.reg_type == "LINEAR":
                         input_current = total_output_current
@@ -476,56 +476,56 @@ class KiPIDA_MainDialog(wx.Dialog):
                             if r.net_name == reg.output_rail_name:
                                 output_rail_v = r.nominal_voltage
                                 break
-                                
+
                         p_out = total_output_current * output_rail_v
                         p_in = p_out / reg.efficiency if reg.efficiency > 0 else p_out
                         input_current = p_in / rail.nominal_voltage if rail.nominal_voltage > 0 else 0
                     else:
                         input_current = total_output_current
-                    
+
                     if input_current == 0:
                         continue
-                        
+
                     # Accumulate this regulator's input current into the total for THIS rail
                     rail_total_current[rail.net_name] += input_current
-                    
+
                     # Apply load at regulator input pads
                     nodes = self._get_mesh_nodes(mesh, reg.input_ref_des, reg.input_pad_names, debug_mode)
                     if not nodes:
                         self.log(f"  WARNING: Regulator {reg.name} input at {reg.input_ref_des} pads {reg.input_pad_names} found NO mesh nodes!")
                         continue
-                    
+
                     i_per_node = input_current / len(nodes)
                     for nid in nodes:
                         solver_loads.append({'node_id': nid, 'current': i_per_node})
-                    
+
                     if debug_mode:
                         self.log(f"  Regulator {reg.name} draws {input_current:.2f}A from {rail.net_name} ({reg.reg_type})")
-                    
+
                     if input_current == 0:
                         continue
-                    
+
                     # Apply load at regulator input pads
                     nodes = self._get_mesh_nodes(mesh, reg.input_ref_des, reg.input_pad_names, debug_mode)
                     if not nodes:
                         self.log(f"  WARNING: Regulator {reg.name} input at {reg.input_ref_des} pads {reg.input_pad_names} found NO mesh nodes!")
                         continue
-                    
+
                     i_per_node = input_current / len(nodes)
                     for nid in nodes:
                         solver_loads.append({'node_id': nid, 'current': i_per_node})
-                    
+
                     if debug_mode:
                         self.log(f"  Regulator {reg.name} draws {input_current:.2f}A from {rail.net_name} ({reg.reg_type})")
-                    
+
                 # C. Solve
                 if not solver_sources:
                     self.log(f"  Warning: No sources for {rail.net_name}. Skipping solve.")
                     continue
-                    
+
                 solver = Solver(debug=debug_mode, log_callback=self.log)
                 results = solver.solve(mesh, solver_sources, solver_loads)
-                
+
                 # D. Store Results
                 v_vals = list(results.values())
                 if v_vals:
@@ -542,7 +542,7 @@ class KiPIDA_MainDialog(wx.Dialog):
 
             # --- 3. Update UI ---
             self._update_results_ui()
-            
+
         except Exception as e:
              self.log(f"System Solve Error: {e}")
              import traceback
@@ -575,20 +575,20 @@ class KiPIDA_MainDialog(wx.Dialog):
             txt += f"  Range: {vmin:.4f} - {vmax:.4f} V\n"
             txt += f"  Drop:  {drop:.4f} V\n\n"
         self.result_text.SetValue(txt)
-        
+
         # Clear existing plot tabs
         self.results_notebook.DeleteAllPages()
-        
+
         if not self.system_results:
             return
-        
+
         # Get stackup once
         try:
             extractor = GeometryExtractor(self.board)
             stackup = extractor.get_board_stackup()
-        except: 
+        except:
             stackup = None
-        
+
         # Get Drop % from UI for coloring scale
         try:
             drop_pct_ui = float(self.txt_drop_pct.GetValue())
@@ -596,33 +596,33 @@ class KiPIDA_MainDialog(wx.Dialog):
             if drop_pct_ui > 100: drop_pct_ui = 100
         except:
             drop_pct_ui = 5.0
-            
+
         try:
             max_dens_ui = float(self.txt_max_dens.GetValue())
             if max_dens_ui <= 0: max_dens_ui = 45.0
         except:
             max_dens_ui = 45.0
-        
+
         debug_mode = self.chk_debug.GetValue()
         plotter = Plotter(debug=debug_mode)
-        
+
         # Create nested tabs for each rail
         for rail_name, data in self.system_results.items():
             # Create rail-level notebook
             rail_notebook = wx.Notebook(self.results_notebook)
-            
+
             mesh = data['mesh']
             mesh.results = data['results']
             vmin, vmax, _ = data['stats']
-            
+
             # Calculate Current Density Map
             density_map = plotter._calculate_current_density_map(mesh, stackup)
             max_j_val = max(density_map.values()) if density_map else 0.0
-            
+
             # Override vmin for plot based on drop %
             nominal = vmax
             plot_vmin = nominal * (1.0 - drop_pct_ui / 100.0)
-            
+
             # Add 3D plot tab
             bmp_3d = plotter.plot_3d_mesh(mesh, stackup, vmin=plot_vmin, vmax=vmax)
             if bmp_3d:
@@ -634,48 +634,48 @@ class KiPIDA_MainDialog(wx.Dialog):
                 sizer_3d.Add(img_ctrl_3d, 1, wx.CENTER | wx.ALL, 5)
                 page_3d.SetSizer(sizer_3d)
                 rail_notebook.AddPage(page_3d, "3D View")
-            
+
             # Add layer tabs
             unique_layers = list(set(n[2] for n in mesh.node_coords.values()))
             unique_layers.sort()
-            
+
             for lid in unique_layers:
                 # Get Layer Name
                 l_name = str(lid)
                 if stackup and 'copper' in stackup and lid in stackup['copper']:
                     l_name = stackup['copper'][lid].get('name', str(lid))
-                
+
                 bmp_2d_v = plotter.plot_layer_2d(mesh, lid, stackup, vmin=plot_vmin, vmax=vmax, layer_name=l_name + " (Voltage)")
                 bmp_2d_j = plotter.plot_layer_current_density(mesh, lid, density_map, stackup, layer_name=l_name + " (Current Density)", vmax=max_dens_ui)
-                
+
                 if bmp_2d_v or bmp_2d_j:
                     page_layer = wx.ScrolledWindow(rail_notebook, style=wx.HSCROLL | wx.VSCROLL)
                     page_layer.SetScrollRate(10, 10)
-                    
+
                     layer_sizer = wx.BoxSizer(wx.VERTICAL)
-                    
+
                     # Voltage Plot
                     if bmp_2d_v:
                         img_ctrl_v = wx.StaticBitmap(page_layer)
                         img_ctrl_v.SetBitmap(bmp_2d_v)
                         layer_sizer.Add(img_ctrl_v, 0, wx.CENTER | wx.ALL, 5)
-                        
+
                     # Current Density Plot
                     if bmp_2d_j:
                         # Add separator or spacing
                         line = wx.StaticLine(page_layer)
                         layer_sizer.Add(line, 0, wx.EXPAND | wx.ALL, 10)
-                        
+
                         img_ctrl_j = wx.StaticBitmap(page_layer)
                         img_ctrl_j.SetBitmap(bmp_2d_j)
                         layer_sizer.Add(img_ctrl_j, 0, wx.CENTER | wx.ALL, 5)
 
                     page_layer.SetSizer(layer_sizer)
                     rail_notebook.AddPage(page_layer, l_name)
-            
+
             # Add rail notebook as a page in the main results notebook
             self.results_notebook.AddPage(rail_notebook, rail_name)
-        
+
         # Switch to Results tab
         self.notebook.SetSelection(1)
 
